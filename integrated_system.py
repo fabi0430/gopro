@@ -91,6 +91,7 @@ class GoProManager(QThread):
         self.hsv_values = [0, 10, 170, 180, 120, 255, 70, 255]
         self._run_flag = True
         self.show_filters = False
+        self.loop = None
         
     async def initialize(self):
         try:
@@ -117,7 +118,7 @@ class GoProManager(QThread):
             toggle = constants.Toggle.DISABLE if self.recording else constants.Toggle.ENABLE
             await self.gopro.http_command.set_shutter(shutter=toggle)
             self.recording = not self.recording
-            status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
+            status = "🔴 Recording" if self.recording else "⏹️ Not recording"
             self.status_update.emit(status)
             
             if not self.recording:
@@ -168,7 +169,9 @@ class GoProManager(QThread):
             cv2.destroyWindow("Cleaned Mask")
     
     def run(self):
-        asyncio.run(self._run())
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self._run())
     
     async def _run(self):
         if not await self.initialize():
@@ -265,6 +268,8 @@ class GoProManager(QThread):
     
     def stop(self):
         self._run_flag = False
+        if self.loop and self.loop.is_running():
+            self.loop.stop()
         self.wait()
 
 class MainWindow(QMainWindow):
@@ -316,7 +321,7 @@ class MainWindow(QMainWindow):
         control_group = QGroupBox("GoPro Controls")
         control_layout = QGridLayout()
         
-        self.record_btn = QPushButton("Start Recording")
+        self.record_btn = QPushButton("Toggle Recording")
         self.record_btn.clicked.connect(self.toggle_recording)
         
         self.set_ref_btn = QPushButton("Set Reference Position")
@@ -370,7 +375,7 @@ class MainWindow(QMainWindow):
         self.ref_pos_label = QLabel("Reference position: Not set")
         self.ref_pos_label.setStyleSheet("font-size: 14px;")
         
-        self.recording_label = QLabel("Recording: Inactive")
+        self.recording_label = QLabel("Recording: Not recording")
         self.recording_label.setStyleSheet("font-size: 14px; color: red;")
         
         self.server_status_label = QLabel(f"Position server: Listening on port {POSITION_SERVER_PORT}")
@@ -432,14 +437,13 @@ class MainWindow(QMainWindow):
     def update_status(self, message):
         self.status_label.setText(message)
         
-        if "Recording started" in message:
-            self.recording_label.setText("Recording: Active")
-            self.recording_label.setStyleSheet("font-size: 14px; color: green;")
-            self.record_btn.setText("Stop Recording")
-        elif "Recording stopped" in message:
-            self.recording_label.setText("Recording: Inactive")
-            self.recording_label.setStyleSheet("font-size: 14px; color: red;")
-            self.record_btn.setText("Start Recording")
+        if "Recording" in message:
+            if "Not recording" in message:
+                self.recording_label.setText("Recording: Not recording")
+                self.recording_label.setStyleSheet("font-size: 14px; color: red;")
+            else:
+                self.recording_label.setText("Recording: Active")
+                self.recording_label.setStyleSheet("font-size: 14px; color: green;")
     
     def handle_position_update(self, position):
         self.current_position = position
@@ -461,11 +465,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No X position detected")
     
     def toggle_recording(self):
-        # Create a new event loop for the coroutine
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.gopro_manager.toggle_recording())
-        loop.close()
+        # Create task in the existing event loop
+        asyncio.run_coroutine_threadsafe(self.gopro_manager.toggle_recording(), self.gopro_manager.loop)
     
     def toggle_filters(self):
         self.gopro_manager.toggle_filters()
