@@ -21,6 +21,7 @@ import platform
 STREAM_PORT = 8554
 DOWNLOAD_DIR = "GoProDownloads"
 POSITION_SERVER_PORT = 65432
+RECONNECT_DELAY = 3
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -93,6 +94,7 @@ class GoProManager(QThread):
         self._run_flag = True
         self.show_filters = False
         self.loop = None
+        self.stream_url = None
         
     async def initialize(self):
         try:
@@ -109,7 +111,8 @@ class GoProManager(QThread):
             await self.gopro.streaming.start_stream(
                 streaming.StreamType.PREVIEW,
                 streaming.PreviewStreamOptions(port=STREAM_PORT))
-            self.cap = cv2.VideoCapture(self.gopro.streaming.url)
+            self.stream_url = self.gopro.streaming.url
+            self.cap = cv2.VideoCapture(self.stream_url)
             self.status_update.emit("📡 Stream started")
         except Exception as e:
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
@@ -120,13 +123,12 @@ class GoProManager(QThread):
                 # Start recording
                 await self.gopro.http_command.set_shutter(shutter=constants.Toggle.ENABLE)
                 self.recording = True
-                self.status_update.emit("🔴 Recording")
-                await asyncio.sleep(1)  # Small delay after starting
+                self.status_update.emit("🔴 Recording started")
             else:
                 # Stop recording
                 await self.gopro.http_command.set_shutter(shutter=constants.Toggle.DISABLE)
                 self.recording = False
-                self.status_update.emit("⏹️ Not recording")
+                self.status_update.emit("⏹️ Recording stopped")
                 
                 # Get media list before and after to find the new video
                 media_before = await self.gopro.http_command.get_media_list()
@@ -208,33 +210,51 @@ class GoProManager(QThread):
         if not await self.initialize():
             return
         
-        await self.start_stream()
-        
-        while self._run_flag and self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
-                processed_frame, masks = self.process_frame(frame)
+        while self._run_flag:
+            try:
+                await self.start_stream()
                 
-                # Convert to QImage for GUI
-                rgb_image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_image.shape
-                bytes_per_line = ch * w
-                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                self.frame_ready.emit(qt_image)
+                while self._run_flag and self.cap and self.cap.isOpened():
+                    ret, frame = self.cap.read()
+                    if ret:
+                        processed_frame, masks = self.process_frame(frame)
+                        
+                        # Convert to QImage for GUI
+                        rgb_image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                        h, w, ch = rgb_image.shape
+                        bytes_per_line = ch * w
+                        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                        self.frame_ready.emit(qt_image)
+                        
+                        # Show filter windows if enabled
+                        if self.show_filters:
+                            red_mask, cleaned_mask = masks
+                            cv2.imshow("Red Mask", red_mask)
+                            cv2.imshow("Cleaned Mask", cleaned_mask)
+                            cv2.waitKey(1)
+                    else:
+                        break
                 
-                # Show filter windows if enabled
+                # Cleanup
                 if self.show_filters:
-                    red_mask, cleaned_mask = masks
-                    cv2.imshow("Red Mask", red_mask)
-                    cv2.imshow("Cleaned Mask", cleaned_mask)
-                    cv2.waitKey(1)
+                    cv2.destroyWindow("Red Mask")
+                    cv2.destroyWindow("Cleaned Mask")
+                if self.cap:
+                    self.cap.release()
+                if self.gopro:
+                    await self.gopro.streaming.stop_active_stream()
+                
+                if not self._run_flag:
+                    break
+                    
+                self.status_update.emit(f"🔄 Reconnecting in {RECONNECT_DELAY} seconds...")
+                await asyncio.sleep(RECONNECT_DELAY)
+                
+            except Exception as e:
+                self.status_update.emit(f"⚠️ Stream error: {str(e)}")
+                await asyncio.sleep(RECONNECT_DELAY)
         
-        # Cleanup
-        if self.show_filters:
-            cv2.destroyWindow("Red Mask")
-            cv2.destroyWindow("Cleaned Mask")
-        if self.cap:
-            self.cap.release()
+        # Final cleanup
         if self.gopro:
             await self.gopro.close()
     
@@ -469,10 +489,10 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
         
         if "Recording" in message:
-            if "Not recording" in message:
+            if "stopped" in message.lower():
                 self.recording_label.setText("Recording: Not recording")
                 self.recording_label.setStyleSheet("font-size: 14px; color: red;")
-            else:
+            elif "started" in message.lower():
                 self.recording_label.setText("Recording: Active")
                 self.recording_label.setStyleSheet("font-size: 14px; color: green;")
     
