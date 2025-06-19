@@ -7,6 +7,7 @@ import os
 import socket
 import json
 from collections import deque
+from threading import Thread
 from open_gopro import WirelessGoPro
 from open_gopro.models import constants, streaming
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -115,41 +116,71 @@ class GoProManager(QThread):
     
     async def toggle_recording(self):
         try:
-            toggle = constants.Toggle.DISABLE if self.recording else constants.Toggle.ENABLE
-            await self.gopro.http_command.set_shutter(shutter=toggle)
-            self.recording = not self.recording
-            status = "🔴 Recording" if self.recording else "⏹️ Not recording"
-            self.status_update.emit(status)
-            
             if not self.recording:
-                await asyncio.sleep(2)
-                await self.download_latest_video()
+                # Start recording
+                await self.gopro.http_command.set_shutter(shutter=constants.Toggle.ENABLE)
+                self.recording = True
+                self.status_update.emit("🔴 Recording")
+                await asyncio.sleep(1)  # Small delay after starting
+            else:
+                # Stop recording
+                await self.gopro.http_command.set_shutter(shutter=constants.Toggle.DISABLE)
+                self.recording = False
+                self.status_update.emit("⏹️ Not recording")
+                
+                # Get media list before and after to find the new video
+                media_before = await self.gopro.http_command.get_media_list()
+                await asyncio.sleep(2)  # Wait for camera to process
+                media_after = await self.gopro.http_command.get_media_list()
+                
+                # Find the new file
+                before_files = set((f.name, f.d) for f in media_before.data.files)
+                after_files = set((f.name, f.d) for f in media_after.data.files)
+                new_files = after_files - before_files
+                
+                if new_files:
+                    filename, directory = new_files.pop()
+                    await self.download_video(filename, directory)
         except Exception as e:
             self.status_update.emit(f"⚠️ Recording error: {str(e)}")
     
-    async def download_latest_video(self):
+    async def download_video(self, filename, directory):
         try:
-            media = await self.gopro.http_command.list_media()
-            if not media.media:
-                self.status_update.emit("⚠️ No media found on camera")
-                return
-
-            latest_folder = media.media[-1]
-            latest_file = latest_folder.files[-1]
-            filename = latest_file.name
-            full_url = f"http://10.5.5.9:8080/videos/DCIM/{latest_folder.d}/{filename}"
-
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
             save_path = os.path.join(DOWNLOAD_DIR, filename)
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(full_url) as resp:
-                    if resp.status == 200:
-                        with open(save_path, "wb") as f:
-                            f.write(await resp.read())
-                        self.status_update.emit(f"✅ Video downloaded: {filename}")
-                    else:
-                        self.status_update.emit(f"❌ Download failed: HTTP {resp.status}")
+            
+            # First try to download via HTTP
+            try:
+                url = f"http://10.5.5.9:8080/videos/DCIM/{directory}/{filename}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            total_size = int(resp.headers.get('content-length', 0))
+                            downloaded = 0
+                            
+                            with open(save_path, "wb") as f:
+                                async for chunk in resp.content.iter_chunked(1024*8):  # 8KB chunks
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    progress = (downloaded / total_size) * 100 if total_size > 0 else 0
+                                    self.status_update.emit(f"⬇️ Downloading {filename}: {progress:.1f}%")
+                            
+                            await asyncio.sleep(0.1)  # Small delay to ensure file is closed
+                            self.status_update.emit(f"✅ Video downloaded: {filename}")
+                            return
+            except Exception as http_error:
+                self.status_update.emit(f"⚠️ HTTP download failed, trying API: {str(http_error)}")
+            
+            # If HTTP fails, try the API method
+            response = await self.gopro.http_command.download_file(
+                camera_file=filename,
+                local_file=save_path
+            )
+            
+            if response.ok:
+                self.status_update.emit(f"✅ Video downloaded via API: {filename}")
+            else:
+                self.status_update.emit(f"❌ Download failed: {response.status}")
         except Exception as e:
             self.status_update.emit(f"⚠️ Download error: {str(e)}")
     
@@ -466,7 +497,11 @@ class MainWindow(QMainWindow):
     
     def toggle_recording(self):
         # Create task in the existing event loop
-        asyncio.run_coroutine_threadsafe(self.gopro_manager.toggle_recording(), self.gopro_manager.loop)
+        future = asyncio.run_coroutine_threadsafe(self.gopro_manager.toggle_recording(), self.gopro_manager.loop)
+        try:
+            future.result(timeout=5)  # Wait for the result with a timeout
+        except asyncio.TimeoutError:
+            self.status_label.setText("⚠️ Recording operation timed out")
     
     def toggle_filters(self):
         self.gopro_manager.toggle_filters()
