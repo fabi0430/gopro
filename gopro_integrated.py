@@ -5,6 +5,7 @@ import asyncio
 import aiohttp
 import os
 import socket
+import logging
 from threading import Thread
 from open_gopro import WirelessGoPro
 from open_gopro.models import constants, streaming
@@ -20,9 +21,9 @@ STREAM_PORT = 8554
 DOWNLOAD_DIR = "GoProDownloads"
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
+
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 
 class PositionServer(QThread):
     position_received = pyqtSignal(dict)
@@ -124,22 +125,45 @@ class GoProManager(QThread):
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
 
     async def toggle_recording(self):
-        toggle = constants.Toggle.ENABLE if not self.recording else constants.Toggle.DISABLE
-        await self.gopro.http_command.set_shutter(shutter=toggle)
-        self.recording = not self.recording
-        status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
-        self.status_update.emit(status)
+        try:
+            toggle = constants.Toggle.ENABLE if not self.recording else constants.Toggle.DISABLE
+            self.status_update.emit("⏳ Sending record command...")
+            resp = await self.gopro.http_command.set_shutter(shutter=toggle)
+            print("DEBUG toggle:", toggle, "resp.ok:", getattr(resp, "ok", None))
+            if not resp.ok:
+                raise RuntimeError(f"HTTP command failed: {resp}")
 
-        if not self.recording:
-            await asyncio.sleep(2)
-            await self.download_latest_video()
+            self.recording = not self.recording
+            status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
+            self.status_update.emit(status)
 
-    async def download_latest_video(self):
-        getter = MediaHttpGetter(self.gopro)
-        files = await getter.list_media()
-        latest = max(files, key=lambda m: m.created)
-        await getter.download_media(latest, os.path.join(DOWNLOAD_DIR, latest.name))
-        self.status_update.emit(f"✅ Downloaded: {latest.name}")
+            if not self.recording:
+                await asyncio.sleep(2)
+                await self.download_and_log()
+        except Exception as e:
+            self.status_update.emit(f"⚠️ Recording error: {e}")
+
+    async def download_and_log(self):
+        try:
+            media_resp = await self.gopro.http_command.get_media_list()
+            files = media_resp.data.files
+            print("DEBUG media count:", len(files))
+            if not files:
+                raise RuntimeError("No media files found")
+
+            last = max(files, key=lambda x: x.created)
+            fname = last.filename
+            save_path = os.path.join(DOWNLOAD_DIR, fname)
+            async with aiohttp.ClientSession() as sess:
+                resp = await sess.get(last.download_url)
+                print("DEBUG download URL:", last.download_url)
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                with open(save_path, "wb") as f:
+                    f.write(await resp.read())
+            self.status_update.emit(f"✅ Video downloaded: {fname}")
+        except Exception as e:
+            self.status_update.emit(f"⚠️ Download error: {e}")
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
