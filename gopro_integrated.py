@@ -132,25 +132,20 @@ class GoProManager(QThread):
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
-            # Obtener estado actual de grabación con get_shutter_status()
-            shutter_status = await self.gopro.http_command.get_shutter_status()
+            state_resp = await self.gopro.http_command.get_camera_state()
+            # state_resp.data es un dict con keys de constantes StatusId
+            encoding = state_resp.data.get(constants.StatusId.ENCODING, 0)
+            recording_now = bool(encoding)
+            print("Estado actual real (ENCODING):", encoding)
 
-            # Revisar si la respuesta tiene atributo recording
-            if not hasattr(shutter_status, 'recording'):
-                raise RuntimeError("La respuesta de get_shutter_status() no contiene 'recording'")
-
-            recording_now = shutter_status.recording
-            print("Estado actual real:", recording_now)
-
-            # Alternar el toggle según estado actual
             toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
-            response = await self.gopro.http_command.set_shutter(shutter=toggle)
-            print("HTTP response:", response)
+            resp = await self.gopro.http_command.set_shutter(shutter=toggle)
+            print("HTTP set_shutter response:", resp)
 
-            if not response.ok:
-                raise RuntimeError(f"GoPro respondió con error: {response.status_code}")
+            if not resp.ok:
+                raise RuntimeError(f"GoPro error: {resp.status}")
 
             self.recording = not recording_now
             status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
@@ -158,15 +153,9 @@ class GoProManager(QThread):
             print(">>> Recording state toggled successfully")
 
             if not self.recording:
-                print(">>> Attempting download after stopping recording")
+                print(">>> Downloading video after stop...")
                 await asyncio.sleep(2)
                 await self.download_and_log()
-
-        except Exception as e:
-            error_msg = f"Recording: error → {e}"
-            print("❌", error_msg)
-            self.status_update.emit(error_msg)
-
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
