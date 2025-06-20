@@ -546,12 +546,31 @@ class MainWindow(QMainWindow):
         future.add_done_callback(callback)
 
     def toggle_recording(self):
-        print("Toggle recording normal iniciado")
-        future = asyncio.run_coroutine_threadsafe(self.gopro_manager.toggle_recording(), self.gopro_manager.loop)
-        try:
-            future.result(timeout=5)
-        except Exception as e:
-            self.status_label.setText(f"⚠️ Recording error: {e}")
+        if not self.recording:
+            try:
+                self.gopro.start_recording()
+                self.recording = True
+                self.status_update.emit("Recording started.")
+            except Exception as e:
+                self.status_update.emit(f"Error starting recording: {e}")
+        else:
+            try:
+                # Confirmar si realmente está grabando
+                status = self.gopro.status()
+                is_actually_recording = (
+                    status.get("video", {}).get("recording", False)
+                )
+
+                if is_actually_recording:
+                    self.gopro.stop_recording()
+                    self.status_update.emit("Recording stopped.")
+                else:
+                    self.status_update.emit("Camera wasn't recording.")
+                self.recording = False
+            except Exception as e:
+                self.status_update.emit(f"Error stopping recording: {e}")
+
+        self.recording_changed.emit(self.recording)
 
     def toggle_filters(self):
         self.gopro_manager.toggle_filters()
