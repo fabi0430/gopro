@@ -132,11 +132,12 @@ class GoProManager(QThread):
 
             # Obtener estado actual real de la GoPro
             resp = await self.gopro.http_command.get_camera_state()
-            recording_now = resp.data.status.video.recording
+            data = resp.data  # Este es un dict
+            recording_now = data.get("recording", {}).get("value", 0)
             print("Estado actual real:", recording_now)
 
             # Alternar estado según estado real
-            toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
+            toggle = constants.Toggle.DISABLE if recording_now == 1 else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
             response = await self.gopro.http_command.set_shutter(shutter=toggle)
