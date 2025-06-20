@@ -125,19 +125,34 @@ class GoProManager(QThread):
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
 
     async def toggle_recording(self):
-        print("Entrando a toggle_recording")
+        print("Toggle recording async iniciado")
         try:
+            print(">>> toggle_recording called")
+            self.status_update.emit("🎬 Attempting to toggle recording...")
+
+            toggle = constants.Toggle.ENABLE if not self.recording else constants.Toggle.DISABLE
+            print(f"Toggle value: {toggle}")
+
+            response = await self.gopro.http_command.set_shutter(shutter=toggle)
+            print("HTTP response:", response)
+
+            if not response.ok:
+                raise RuntimeError(f"GoPro responded with error: {response.status_code}")
+
+            self.recording = not self.recording
+            status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
+            self.status_update.emit(status)
+            print(">>> Recording state toggled successfully")
+
             if not self.recording:
-                print("Iniciando grabación")
-                await self.gopro.start_recording()
-                self.recording = True
-            else:
-                print("Deteniendo grabación")
-                await self.gopro.stop_recording()
-                self.recording = False
-            print("toggle_recording terminó con éxito")
+                print(">>> Attempting download after stopping recording")
+                await asyncio.sleep(2)
+                await self.download_last_video()
+
         except Exception as e:
-            print("Error en toggle_recording:", e)
+            error_msg = f"Recording: error → {e}"
+            print("❌", error_msg)
+            self.status_update.emit(error_msg)
 
     async def download_and_log(self):
         print("Rutina de guardado de archivo iniciada")
