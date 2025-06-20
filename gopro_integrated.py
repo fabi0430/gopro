@@ -130,69 +130,75 @@ class GoProManager(QThread):
 
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
-        # Guardar estado previo de archivos
-        pre = {
+
+        # Tomar archivos antes de grabar
+        pre_files = {
             item.filename
             for item in (await self.gopro.http_command.get_media_list()).data.files
         }
 
         try:
             self.status_update.emit("🎬 Attempting to toggle recording…")
-            # Consultamos estado real de codificación (ENCODING)
+
             state = await self.gopro.http_command.get_camera_state()
             encoding = state.data.get(constants.StatusId.ENCODING, 0)
             is_recording = bool(encoding)
-            print("Estado ENCODING real:", encoding)
+            print("Estado actual (ENCODING):", encoding)
 
-            # Alternar grabación
             toggle = constants.Toggle.DISABLE if is_recording else constants.Toggle.ENABLE
-            print("Toggle value:", toggle)
             resp = await self.gopro.http_command.set_shutter(shutter=toggle)
             print("HTTP set_shutter response:", resp)
+
             if not resp.ok:
                 raise RuntimeError(f"GoPro error: {resp.status}")
-            self.recording = not is_recording
-            msg = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
-            self.status_update.emit(msg)
-            print(">>> Recording state toggled successfully")
 
-            # Si acabó de detener, bajar el video
+            self.recording = not is_recording
+            status_msg = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
+            self.status_update.emit(status_msg)
+
             if not self.recording:
-                print(">>> Downloading video after stop…")
-                await asyncio.sleep(2)  # esperar procesamiento
-                await self.download_and_log(pre)
+                print("Esperando a que la cámara termine de procesar…")
+                await asyncio.sleep(5)  # Puede ajustarse
+                await self.download_and_log(pre_files)
 
         except Exception as e:
-            err = f"Recording: error → {e}"
-            print("❌", err)
-            self.status_update.emit(err)
+            self.status_update.emit(f"❌ Error: {e}")
 
     async def download_and_log(self, pre_files):
-        print("🛠️ Saving video to PC…")
-        try:
-            after = {
-                item.filename
-                for item in (await self.gopro.http_command.get_media_list()).data.files
-            }
-            new_files = after - pre_files
-            if not new_files:
-                raise RuntimeError("No new media found")
-            for camera_file in new_files:
-                out = os.path.join(DOWNLOAD_DIR, camera_file.replace("/", os.sep))
-                os.makedirs(os.path.dirname(out), exist_ok=True)
+        print("🛠️ Iniciando descarga de video…")
+        retries = 5
+        delay = 2
 
-                resp = await self.gopro.http_command.download_file(
-                    camera_file=camera_file,
-                    local_file=out
-                )
-                if not resp.ok:
-                    raise RuntimeError(f"Download failed: {resp.status.name}")
-                self.status_update.emit(f"✅ Video downloaded: {os.path.basename(camera_file)}")
-                print(f"Downloaded {camera_file} to {out}")
+        for attempt in range(retries):
+            try:
+                resp = await self.gopro.http_command.get_media_list()
+                files = {item.filename for item in resp.data.files}
+                new_files = files - pre_files
 
-        except Exception as e:
-            print("❌ Download error:", e)
-            self.status_update.emit(f"⚠️ Download error: {e}")
+                if not new_files:
+                    raise RuntimeError("No new media found")
+
+                for camera_file in new_files:
+                    out = os.path.join(DOWNLOAD_DIR, camera_file.replace("/", os.sep))
+                    os.makedirs(os.path.dirname(out), exist_ok=True)
+
+                    download = await self.gopro.http_command.download_file(
+                        camera_file=camera_file,
+                        local_file=out
+                    )
+                    if not download.ok:
+                        raise RuntimeError(f"Download failed: {download.status.name}")
+                    self.status_update.emit(f"✅ Video downloaded: {os.path.basename(camera_file)}")
+                    print(f"Downloaded {camera_file} to {out}")
+                return  # Éxito, salir
+
+            except Exception as e:
+                print(f"❌ Attempt {attempt + 1}: {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(delay)
+                    delay *= 1.5  # Backoff progresivo
+                else:
+                    self.status_update.emit(f"⚠️ Download failed after retries: {e}")
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
