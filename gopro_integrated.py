@@ -148,7 +148,7 @@ class GoProManager(QThread):
                 raise RuntimeError(f"GoPro error: {resp.status}")
 
             self.recording = not recording_now
-            status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
+            status = "🔴 Recording started" if encoding else "⏹️ Recording stopped"
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
 
