@@ -93,6 +93,7 @@ class GoProManager(QThread):
 
     def __init__(self):
         super().__init__()
+        self._pre_record_files = set()
         self.constants = None
         self.gopro = None
         self.cap = None
@@ -129,6 +130,8 @@ class GoProManager(QThread):
 
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
+        self._pre_record_files = {
+            item.filename for item in (await self.gopro.http_command.get_media_list()).data.files}
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
@@ -164,29 +167,29 @@ class GoProManager(QThread):
 
     async def download_and_log(self):
         print("🛠️ Saving video to PC…")
-        try:
-            before = set((await self.gopro.http_command.get_media_list()).data.files)
-            # Debes llamar a esta función **inmediatamente después** de detener la grabación
-            after = set((await self.gopro.http_command.get_media_list()).data.files)
-            new_files = after - before
-            if not new_files:
-                raise RuntimeError("No new media found on camera")
-            video = new_files.pop()
-            fname = video.filename  # ya incluye ruta como "100GOPRO/GOPRxxxx.MP4" :contentReference[oaicite:2]{index=2}
-            out = os.path.join("/home/dtc-dresden/Go_Pro_Videos", os.path.basename(fname))
 
-            resp = await self.gopro.http_command.download_file(
-                camera_file=fname,
-                local_file=out
-            )
-            if resp.ok:
-                self.status_update.emit(f"✅ Video downloaded: {os.path.basename(fname)}")
-                print("✅ Saved to", out)
-            else:
-                raise RuntimeError(f"Download failed: {resp.status}")
+        try:
+            after = {
+                item.filename for item in (await self.gopro.http_command.get_media_list()).data.files
+            }
+            new_files = after - self._pre_record_files
+            if not new_files:
+                raise RuntimeError("No new media found")
+            # Si hay varios, puedes manejarlos todos o tomar uno:
+            for camera_file in new_files:
+                out = os.path.join(DOWNLOAD_DIR, camera_file.replace("/", os.sep))
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                resp = await self.gopro.http_command.download_file(
+                    camera_file=camera_file,
+                    local_file=out
+                )
+                if not resp.ok:
+                    raise RuntimeError(f"Download failed: {resp.status.name}")
+                self.status_update.emit(f"✅ Video downloaded: {os.path.basename(camera_file)}")
+                print(f"Downloaded {camera_file} to {out}")
+
         except Exception as e:
             self.status_update.emit(f"⚠️ Download error: {e}")
-            print("⚠️ Download error:", e)
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
