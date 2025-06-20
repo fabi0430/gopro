@@ -165,29 +165,28 @@ class GoProManager(QThread):
     async def download_and_log(self):
         print("🛠️ Saving video to PC…")
         try:
-            # 1️⃣ Obtén lista antes y después de grabar
             before = set((await self.gopro.http_command.get_media_list()).data.files)
-            # NOTA: asegúrate de llamar a esta función inmediatamente **después** de detener la grabación
+            # Debes llamar a esta función **inmediatamente después** de detener la grabación
             after = set((await self.gopro.http_command.get_media_list()).data.files)
-            new = after.difference(before)
-            if not new:
-                raise RuntimeError("No new media found")
-            video = new.pop()
-            fname = video.filename
-            out = os.path.join(DOWNLOAD_DIR, fname)
+            new_files = after - before
+            if not new_files:
+                raise RuntimeError("No new media found on camera")
+            video = new_files.pop()
+            fname = video.filename  # ya incluye ruta como "100GOPRO/GOPRxxxx.MP4" :contentReference[oaicite:2]{index=2}
+            out = os.path.join("/home/dtc-dresden/Go_Pro_Videos", os.path.basename(fname))
 
-            # 2️⃣ Descarga utilizando el método oficial
             resp = await self.gopro.http_command.download_file(
-                camera_file=video.filename,
+                camera_file=fname,
                 local_file=out
             )
-
             if resp.ok:
-                self.status_update.emit(f"✅ Video downloaded: {fname}")
+                self.status_update.emit(f"✅ Video downloaded: {os.path.basename(fname)}")
+                print("✅ Saved to", out)
             else:
                 raise RuntimeError(f"Download failed: {resp.status}")
         except Exception as e:
             self.status_update.emit(f"⚠️ Download error: {e}")
+            print("⚠️ Download error:", e)
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
