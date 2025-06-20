@@ -130,13 +130,16 @@ class GoProManager(QThread):
 
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
-        self._pre_record_files = {
-            item.filename for item in (await self.gopro.http_command.get_media_list()).data.files}
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
+            # Guardar lista de archivos antes de grabar
+            pre_record_files = {
+                item.filename for item in (await self.gopro.http_command.get_media_list()).data.files
+            }
+
+            # Leer estado actual de la cámara (ENCODING = grabando)
             state_resp = await self.gopro.http_command.get_camera_state()
-            # state_resp.data es un dict con keys de constantes StatusId
             encoding = state_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_now = bool(encoding)
             print("Estado actual real (ENCODING):", encoding)
@@ -155,41 +158,54 @@ class GoProManager(QThread):
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
 
+            # Si terminamos la grabación, esperar y descargar
             if not self.recording:
-                print(">>> Downloading video after stop...")
-                await asyncio.sleep(2)
-                await self.download_and_log()
+                print(">>> Waiting for GoPro to finalize file…")
+                await asyncio.sleep(5)  # tiempo para que GoPro escriba el archivo
+                await self.download_and_log(pre_record_files)
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
             print("❌", error_msg)
             self.status_update.emit(error_msg)
 
-    async def download_and_log(self):
+    async def download_and_log(self, pre_record_files):
         print("🛠️ Saving video to PC…")
 
         try:
-            after = {
-                item.filename for item in (await self.gopro.http_command.get_media_list()).data.files
-            }
-            new_files = after - self._pre_record_files
+            # Intentar varias veces obtener media list nueva
+            for attempt in range(10):
+                try:
+                    after_list = (await self.gopro.http_command.get_media_list()).data.files
+                    break
+                except Exception as e:
+                    print(f"Intento {attempt + 1}/10 fallido: {e}")
+                    await asyncio.sleep(1)
+            else:
+                raise RuntimeError("Camera busy: could not retrieve media list")
+
+            # Detectar nuevos archivos
+            after_files = {item.filename for item in after_list}
+            new_files = after_files - pre_record_files
             if not new_files:
                 raise RuntimeError("No new media found")
-            # Si hay varios, puedes manejarlos todos o tomar uno:
+
+            # Descargar todos los archivos nuevos
             for camera_file in new_files:
-                out = os.path.join(DOWNLOAD_DIR, camera_file.replace("/", os.sep))
-                os.makedirs(os.path.dirname(out), exist_ok=True)
+                out_path = os.path.join(DOWNLOAD_DIR, camera_file.replace("/", os.sep))
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 resp = await self.gopro.http_command.download_file(
                     camera_file=camera_file,
-                    local_file=out
+                    local_file=out_path
                 )
                 if not resp.ok:
                     raise RuntimeError(f"Download failed: {resp.status.name}")
                 self.status_update.emit(f"✅ Video downloaded: {os.path.basename(camera_file)}")
-                print(f"Downloaded {camera_file} to {out}")
+                print(f"📥 Downloaded {camera_file} to {out_path}")
 
         except Exception as e:
             self.status_update.emit(f"⚠️ Download error: {e}")
+            print("❌", e)
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
