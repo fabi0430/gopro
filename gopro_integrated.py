@@ -510,10 +510,13 @@ class MainWindow(QMainWindow):
     def handle_record_click(self):
         print("Boton de grabar presionado")
         if self.gopro_manager.loop and self.gopro_manager.loop.is_running():
+            print("If ejecutado")
             asyncio.run_coroutine_threadsafe(
                 self.gopro_manager.toggle_recording(),
                 self.gopro_manager.loop
             )
+        else:
+            print("If falso")
 
     def toggle_recording(self):
         print("Toggle recording normal iniciado")
