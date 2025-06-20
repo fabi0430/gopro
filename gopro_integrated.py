@@ -18,11 +18,11 @@ import platform
 
 # Configuration
 STREAM_PORT = 8554
-DOWNLOAD_DIR = "/home/dtc-dresden/Go_Pro_Videos"
+DOWNLOAD_DIR = "GoProDownloads"
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+toggle_recording_int=0
 
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -93,7 +93,6 @@ class GoProManager(QThread):
 
     def __init__(self):
         super().__init__()
-        self._pre_record_files = set()
         self.constants = None
         self.gopro = None
         self.cap = None
@@ -131,83 +130,60 @@ class GoProManager(QThread):
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
         try:
-            self._pre_record_files = {
-                item.filename for item in (await self.gopro.http_command.get_media_list()).data.files}
-
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
-            # Query real camera state to avoid mismatches
             state_resp = await self.gopro.http_command.get_camera_state()
+            # state_resp.data es un dict con keys de constantes StatusId
             encoding = state_resp.data.get(constants.StatusId.ENCODING, 0)
-            busy = state_resp.data.get(constants.StatusId.SYSTEM_BUSY, 0)
-            recording_now = bool(encoding or busy)
-            print("State encoding:", encoding, "busy:", busy)
+            recording_now = bool(encoding)
+            print("Estado actual real (ENCODING):", encoding)
 
             toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
-            print("Toggle value:", toggle)
+            print(f"Toggle value: {toggle}")
 
             resp = await self.gopro.http_command.set_shutter(shutter=toggle)
             print("HTTP set_shutter response:", resp)
+
             if not resp.ok:
                 raise RuntimeError(f"GoPro error: {resp.status}")
 
             self.recording = not recording_now
             status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
             self.status_update.emit(status)
+            print(">>> Recording state toggled successfully")
 
-            if self.recording:
-                return
-
-            # Stop streaming first (workaround GitHub #352)
-            await self.gopro.http_command.set_preview_stream(
-                mode=constants.Toggle.DISABLE, port=STREAM_PORT)
-
-            print(">>> Recording stopped, downloading…")
-            await asyncio.sleep(2)
-            await self.download_and_log()
+            if not self.recording:
+                print(">>> Downloading video after stop...")
+                await asyncio.sleep(2)
+                await self.download_and_log()
 
         except Exception as e:
-            err = f"Recording: error → {e}"
-            print("❌", err)
-            self.status_update.emit(err)
+            error_msg = f"Recording: error → {e}"
+            print("❌", error_msg)
+            self.status_update.emit(error_msg)
 
     async def download_and_log(self):
-        print("🛠️ Saving video to PC…")
-        retries = 10
-        await asyncio.sleep(10)
+        print("Rutina de guardado de archivo iniciada")
+        try:
+            media_resp = await self.gopro.http_command.get_media_list()
+            files = media_resp.data.files
+            print("DEBUG media count:", len(files))
+            if not files:
+                raise RuntimeError("No media files found")
 
-        for attempt in range(retries):
-            try:
-                resp = await self.gopro.http_command.get_media_list()
-                files = resp.data.files
-                break
-            except Exception as e:
-                print(f"Get media_list attempt {attempt + 1} failed: {e}")
-                await asyncio.sleep(2)
-        else:
-            self.status_update.emit("⚠️ Download error: camera busy")
-            return
-
-        after = {item.filename for item in files}
-        new = after - getattr(self, '_pre_record_files', set())
-
-        if not new:
-            self.status_update.emit("⚠️ Download error: No new media found")
-            return
-
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        for cam_file in new:
-            out = os.path.join(DOWNLOAD_DIR, cam_file.replace("/", os.sep))
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            resp = await self.gopro.http_command.download_file(
-                camera_file=cam_file,
-                local_file=out
-            )
-            if not resp.ok:
-                self.status_update.emit(f"⚠️ Download failed: {resp.status.name}")
-                return
-            self.status_update.emit(f"✅ Video downloaded: {os.path.basename(cam_file)}")
-            print(f"Downloaded {cam_file} to {out}")
+            last = max(files, key=lambda x: x.created)
+            fname = last.filename
+            save_path = os.path.join(DOWNLOAD_DIR, fname)
+            async with aiohttp.ClientSession() as sess:
+                resp = await sess.get(last.download_url)
+                print("DEBUG download URL:", last.download_url)
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                with open(save_path, "wb") as f:
+                    f.write(await resp.read())
+            self.status_update.emit(f"✅ Video downloaded: {fname}")
+        except Exception as e:
+            self.status_update.emit(f"⚠️ Download error: {e}")
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
