@@ -5,8 +5,8 @@ import asyncio
 import aiohttp
 import os
 import socket
-import logging
 from threading import Thread
+import threading
 from open_gopro import WirelessGoPro
 from open_gopro.models import constants, streaming
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -341,6 +341,15 @@ class MainWindow(QMainWindow):
         # Start GoPro
         self.gopro_manager.start()
 
+        # Crear el bucle dedicado para GoPro
+        self.gopro_loop = asyncio.new_event_loop()
+
+        def start_gopro_loop():
+            asyncio.set_event_loop(self.gopro_loop)
+            self.gopro_loop.run_forever()
+
+        threading.Thread(target=start_gopro_loop, daemon=True).start()
+
     def init_ui(self):
         main_widget = QWidget()
         main_layout = QHBoxLayout()
@@ -508,15 +517,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No X position detected")
 
     def handle_record_click(self):
-        print("Boton de grabar presionado")
-        if self.gopro_manager.loop and self.gopro_manager.loop.is_running():
-            print("If ejecutado")
-            asyncio.run_coroutine_threadsafe(
-                self.gopro_manager.toggle_recording(),
-                self.gopro_manager.loop
-            )
-        else:
-            print("If falso")
+        print("Botón presionado, enviando coroutine")
+
+        # Enviar la tarea async al bucle del hilo
+        future = asyncio.run_coroutine_threadsafe(
+            self.gopro_manager.toggle_recording(), self.gopro_loop
+        )
+
+        # Opcional: manejar errores o resultado
+        def callback(fut):
+            try:
+                result = fut.result()
+                print("Grabación finalizada:", result)
+            except Exception as e:
+                print("Error en grabación:", e)
+
+        future.add_done_callback(callback)
 
     def toggle_recording(self):
         print("Toggle recording normal iniciado")
