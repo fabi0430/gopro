@@ -132,29 +132,36 @@ class GoProManager(QThread):
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
+            # Verifica el estado actual de grabación
             state_resp = await self.gopro.http_command.get_camera_state()
-            # state_resp.data es un dict con keys de constantes StatusId
             encoding = state_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_now = bool(encoding)
             print("Estado actual real (ENCODING):", encoding)
 
+            # Decide el toggle
             toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
+            # Ejecuta el comando
             resp = await self.gopro.http_command.set_shutter(shutter=toggle)
             print("HTTP set_shutter response:", resp)
-
-            status = "🔴 Recording started" if encoding == False else "⏹️ Recording stopped"
-            self.status_update.emit(status)
 
             if not resp.ok:
                 raise RuntimeError(f"GoPro error: {resp.status}")
 
+            # Cambia el estado de grabación interno
             self.recording = not recording_now
-            status = "🔴 Recording started" if encoding==False else "⏹️ Recording stopped"
+
+            # Emite mensaje según la acción que acabamos de hacer
+            if toggle == constants.Toggle.ENABLE:
+                status = "🔴 Recording started"
+            else:
+                status = "⏹️ Recording stopped"
+
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
 
+            # Si se acaba de detener, intenta descargar
             if not self.recording:
                 print(">>> Downloading video after stop...")
                 await asyncio.sleep(2)
