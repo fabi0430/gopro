@@ -132,7 +132,7 @@ class GoProManager(QThread):
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
             # Consultar el estado actual real de la GoPro
-            status_resp = await self.gopro.http_command.get_status()
+            status_resp = await self.gopro.http_command.get_camera_state()
             recording_state = status_resp.data.get("recording", {}).get("value", 0)
             print("Estado actual real:", recording_state)
 
