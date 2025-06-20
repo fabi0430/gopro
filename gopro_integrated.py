@@ -22,6 +22,8 @@ DOWNLOAD_DIR = "GoProDownloads"
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
 
+toggle_recording_int=0
+
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -125,19 +127,19 @@ class GoProManager(QThread):
         except Exception as e:
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
 
-    async def toggle_recording(self):
+    async def toggle_recording(self, toggle_recording_int):
         print("Toggle recording async iniciado")
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
             # Obtener estado actual real de la GoPro
-            resp = await self.gopro.http_command.get_camera_state()
-            data = resp.data  # Este es un dict
-            recording_now = data.get("recording", {}).get("value", 0)
-            print("Estado actual real:", recording_now)
+            #resp = await self.gopro.http_command.get_camera_state()
+            #data = resp.data  # Este es un dict
+            #recording_now = data.get("recording", {}).get("value", 0)
+            #print("Estado actual real:", recording_now)
 
             # Alternar estado según estado real
-            toggle = constants.Toggle.DISABLE if recording_now == 1 else constants.Toggle.ENABLE
+            toggle = constants.Toggle.DISABLE if toggle_recording_int==0 else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
             response = await self.gopro.http_command.set_shutter(shutter=toggle)
@@ -146,10 +148,11 @@ class GoProManager(QThread):
             if not response.ok:
                 raise RuntimeError(f"GoPro responded with error: {response.status_code}")
 
-            self.recording = not recording_now
+            self.recording = not toggle_recording_int
             status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
+            toggle_recording_int=1 if toggle_recording_int==0 else 0
 
             if not self.recording:
                 print(">>> Attempting download after stopping recording")
@@ -536,7 +539,7 @@ class MainWindow(QMainWindow):
         print("Botón presionado, enviando coroutine")
 
         future = asyncio.run_coroutine_threadsafe(
-            self.gopro_manager.toggle_recording(), self.gopro_loop
+            self.gopro_manager.toggle_recording(toggle_recording_int), self.gopro_loop
         )
 
         def callback(fut):
