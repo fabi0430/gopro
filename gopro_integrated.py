@@ -161,42 +161,31 @@ class GoProManager(QThread):
             self.status_update.emit(error_msg)
 
     async def download_and_log(self):
-        print("Rutina de guardado de archivo iniciada")
-        await asyncio.sleep(3)
+        print("🛠️ Saving video to PC…")
         try:
-            # Obtener la lista de medios
-            media_resp = await self.gopro.http_command.get_media_list()
-            files = media_resp.data.files
-            print("DEBUG media count:", len(files))
-            if not files:
-                raise RuntimeError("No media files found")
+            # 1️⃣ Obtén lista antes y después de grabar
+            before = set((await self.gopro.http_command.get_media_list()).data.files)
+            # NOTA: asegúrate de llamar a esta función inmediatamente **después** de detener la grabación
+            after = set((await self.gopro.http_command.get_media_list()).data.files)
+            new = after.difference(before)
+            if not new:
+                raise RuntimeError("No new media found")
+            video = new.pop()
+            fname = video.filename
+            out = os.path.join(DOWNLOAD_DIR, fname)
 
-            # Obtener el archivo más reciente
-            last = max(files, key=lambda x: x.created)
-            fname = last.filename
-            download_url = last.download_url
-            save_path = os.path.join(DOWNLOAD_DIR, fname)
+            # 2️⃣ Descarga utilizando el método oficial
+            resp = await self.gopro.http_command.download_file(
+                camera_file=video.filename,
+                local_file=out
+            )
 
-            print(f"Descargando desde: {download_url}")
-            print(f"Guardando en: {save_path}")
-
-            # Descargar el archivo usando un ClientSession
-            timeout = aiohttp.ClientTimeout(total=120)  # Puedes ajustar este valor
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(download_url) as resp:
-                    if resp.status != 200:
-                        raise RuntimeError(f"HTTP {resp.status}")
-                    data = await resp.read()
-                    with open(save_path, "wb") as f:
-                        f.write(data)
-
-            self.status_update.emit(f"✅ Video downloaded: {fname}")
-            print(f"✅ Archivo guardado exitosamente: {fname}")
-
+            if resp.ok:
+                self.status_update.emit(f"✅ Video downloaded: {fname}")
+            else:
+                raise RuntimeError(f"Download failed: {resp.status}")
         except Exception as e:
-            error_msg = f"⚠️ Download error: {e}"
-            print("❌", error_msg)
-            self.status_update.emit(error_msg)
+            self.status_update.emit(f"⚠️ Download error: {e}")
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
