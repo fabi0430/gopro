@@ -128,19 +128,32 @@ class GoProManager(QThread):
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
         try:
-            print(">>> toggle_recording called")
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
-            # Consultar el estado actual real de la GoPro
-            status_resp = await self.gopro.http_command.get_camera_state()
-            recording_state = status_resp.data.get("recording", {}).get("value", 0)
-            print("Estado actual real:", recording_state)
+            # Obtener estado actual real de la GoPro
+            resp = await self.gopro.http_command.get_camera_state()
+            recording_now = resp.data.status.video.recording
+            print("Estado actual real:", recording_now)
 
-            # Decidir el toggle real basado en estado de la cámara, no solo en self.recording
-            toggle = constants.Toggle.DISABLE if recording_state == 1 else constants.Toggle.ENABLE
+            # Alternar estado según estado real
+            toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
             response = await self.gopro.http_command.set_shutter(shutter=toggle)
+            print("HTTP response:", response)
+
+            if not response.ok:
+                raise RuntimeError(f"GoPro responded with error: {response.status_code}")
+
+            self.recording = not recording_now
+            status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
+            self.status_update.emit(status)
+            print(">>> Recording state toggled successfully")
+
+            if not self.recording:
+                print(">>> Attempting download after stopping recording")
+                await asyncio.sleep(2)
+                await self.download_and_log()
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
