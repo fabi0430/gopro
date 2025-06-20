@@ -131,25 +131,16 @@ class GoProManager(QThread):
             print(">>> toggle_recording called")
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
-            toggle = constants.Toggle.ENABLE if not self.recording else constants.Toggle.DISABLE
+            # Consultar el estado actual real de la GoPro
+            status_resp = await self.gopro.http_command.get_status()
+            recording_state = status_resp.data.get("recording", {}).get("value", 0)
+            print("Estado actual real:", recording_state)
+
+            # Decidir el toggle real basado en estado de la cámara, no solo en self.recording
+            toggle = constants.Toggle.DISABLE if recording_state == 1 else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
             response = await self.gopro.http_command.set_shutter(shutter=toggle)
-            print("HTTP response:", response)
-
-            if not response.ok:
-                raise RuntimeError(f"GoPro responded with error: {response.status_code}")
-
-            self.recording = not self.recording
-            self.recording_changed.emit(self.recording)  # <- Nueva línea
-            status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
-            self.status_update.emit(status)
-            print(">>> Recording state toggled successfully")
-
-            if not self.recording:
-                print(">>> Attempting download after stopping recording")
-                await asyncio.sleep(2)
-                await self.download_and_log()
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
@@ -530,12 +521,10 @@ class MainWindow(QMainWindow):
     def handle_record_click(self):
         print("Botón presionado, enviando coroutine")
 
-        # Enviar la tarea async al bucle del hilo
         future = asyncio.run_coroutine_threadsafe(
             self.gopro_manager.toggle_recording(), self.gopro_loop
         )
 
-        # Opcional: manejar errores o resultado
         def callback(fut):
             try:
                 result = fut.result()
@@ -544,33 +533,6 @@ class MainWindow(QMainWindow):
                 print("Error en grabación:", e)
 
         future.add_done_callback(callback)
-
-    def toggle_recording(self):
-        if not self.recording:
-            try:
-                self.gopro.start_recording()
-                self.recording = True
-                self.status_update.emit("Recording started.")
-            except Exception as e:
-                self.status_update.emit(f"Error starting recording: {e}")
-        else:
-            try:
-                # Confirmar si realmente está grabando
-                status = self.gopro.status()
-                is_actually_recording = (
-                    status.get("video", {}).get("recording", False)
-                )
-
-                if is_actually_recording:
-                    self.gopro.stop_recording()
-                    self.status_update.emit("Recording stopped.")
-                else:
-                    self.status_update.emit("Camera wasn't recording.")
-                self.recording = False
-            except Exception as e:
-                self.status_update.emit(f"Error stopping recording: {e}")
-
-        self.recording_changed.emit(self.recording)
 
     def toggle_filters(self):
         self.gopro_manager.toggle_filters()
