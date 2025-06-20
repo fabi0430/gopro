@@ -132,21 +132,17 @@ class GoProManager(QThread):
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
-            # Obtener estado actual real de la GoPro
-            state = await self.gopro.http_command.get_camera_state()
+            # Obtener estado actual de grabación con get_shutter_status()
+            shutter_status = await self.gopro.http_command.get_shutter_status()
 
-            # Verificar si hubo error
-            if hasattr(state, 'error') and state.error:
-                raise RuntimeError(f"Error al obtener estado de cámara: {state.error}")
+            # Revisar si la respuesta tiene atributo recording
+            if not hasattr(shutter_status, 'recording'):
+                raise RuntimeError("La respuesta de get_shutter_status() no contiene 'recording'")
 
-            # Verificar estructura antes de acceder
-            if not hasattr(state, 'status') or not hasattr(state.status, 'video'):
-                raise RuntimeError("Estado de cámara no tiene información de video")
-
-            recording_now = state.status.video.recording
+            recording_now = shutter_status.recording
             print("Estado actual real:", recording_now)
 
-            # Alternar estado según estado real
+            # Alternar el toggle según estado actual
             toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
@@ -165,6 +161,12 @@ class GoProManager(QThread):
                 print(">>> Attempting download after stopping recording")
                 await asyncio.sleep(2)
                 await self.download_and_log()
+
+        except Exception as e:
+            error_msg = f"Recording: error → {e}"
+            print("❌", error_msg)
+            self.status_update.emit(error_msg)
+
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
