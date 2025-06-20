@@ -18,7 +18,7 @@ import platform
 
 # Configuration
 STREAM_PORT = 8554
-DOWNLOAD_DIR = "GoProDownloads"
+DOWNLOAD_DIR = "/home/dtc-dresden/Go_Pro_Videos"
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
 
