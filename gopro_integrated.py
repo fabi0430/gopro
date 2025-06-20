@@ -87,6 +87,7 @@ class GoProManager(QThread):
     frame_ready = pyqtSignal(QImage)
     status_update = pyqtSignal(str)
     position_update = pyqtSignal(tuple)
+    recording_changed = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -127,6 +128,9 @@ class GoProManager(QThread):
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
         try:
+            self.recording = not self.recording
+            self.recording_changed.emit(self.recording)  # <- Nueva línea
+
             print(">>> toggle_recording called")
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
@@ -331,6 +335,7 @@ class MainWindow(QMainWindow):
         self.gopro_manager.frame_ready.connect(self.update_gopro_image)
         self.gopro_manager.status_update.connect(self.update_status)
         self.gopro_manager.position_update.connect(self.handle_position_update)
+        self.gopro_manager.recording_changed.connect(self.update_recording_label)
 
         # Current position tracking
         self.current_position = None
@@ -482,6 +487,14 @@ class MainWindow(QMainWindow):
         main_widget.setLayout(main_layout)
 
         self.setCentralWidget(main_widget)
+
+    def update_recording_label(self, is_recording):
+        if is_recording:
+            self.recording_label.setText("Recording: 🔴 Recording")
+            self.recording_label.setStyleSheet("font-size: 14px; color: red;")
+        else:
+            self.recording_label.setText("Recording: ⏹️ Not recording")
+            self.recording_label.setStyleSheet("font-size: 14px; color: green;")
 
     def update_gopro_image(self, qt_image):
         self.gopro_label.setPixmap(QPixmap.fromImage(qt_image))
