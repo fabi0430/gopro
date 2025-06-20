@@ -22,6 +22,8 @@ DOWNLOAD_DIR = "/home/dtc-dresden/Go_Pro_Videos"
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
 
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
