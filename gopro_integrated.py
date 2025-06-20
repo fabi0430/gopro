@@ -125,25 +125,37 @@ class GoProManager(QThread):
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
 
     async def toggle_recording(self):
+        print("Toggle recording async iniciado")
         try:
+            print(">>> toggle_recording called")
+            self.status_update.emit("🎬 Attempting to toggle recording...")
+
             toggle = constants.Toggle.ENABLE if not self.recording else constants.Toggle.DISABLE
-            self.status_update.emit("⏳ Sending record command...")
-            resp = await self.gopro.http_command.set_shutter(shutter=toggle)
-            print("DEBUG toggle:", toggle, "resp.ok:", getattr(resp, "ok", None))
-            if not resp.ok:
-                raise RuntimeError(f"HTTP command failed: {resp}")
+            print(f"Toggle value: {toggle}")
+
+            response = await self.gopro.http_command.set_shutter(shutter=toggle)
+            print("HTTP response:", response)
+
+            if not response.ok:
+                raise RuntimeError(f"GoPro responded with error: {response.status_code}")
 
             self.recording = not self.recording
             status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
             self.status_update.emit(status)
+            print(">>> Recording state toggled successfully")
 
             if not self.recording:
+                print(">>> Attempting download after stopping recording")
                 await asyncio.sleep(2)
-                await self.download_and_log()
+                await self.download_last_video()
+
         except Exception as e:
-            self.status_update.emit(f"⚠️ Recording error: {e}")
+            error_msg = f"Recording: error → {e}"
+            print("❌", error_msg)
+            self.status_update.emit(error_msg)
 
     async def download_and_log(self):
+        print("Rutina de guardado de archivo iniciada")
         try:
             media_resp = await self.gopro.http_command.get_media_list()
             files = media_resp.data.files
@@ -353,7 +365,7 @@ class MainWindow(QMainWindow):
         control_layout = QGridLayout()
 
         self.record_btn = QPushButton("Toggle Recording")
-        self.record_btn.clicked.connect(self.toggle_recording)
+        self.record_btn.clicked.connect(self.handle_record_click)
 
         self.set_ref_btn = QPushButton("Set Reference Position")
         self.set_ref_btn.clicked.connect(self.set_reference_position)
@@ -495,7 +507,12 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Warning", "No X position detected")
 
+    def handle_record_click(self):
+        print("Boton de grabar presionado")
+        asyncio.create_task(self.gopro_manager.toggle_recording())
+
     def toggle_recording(self):
+        print("Toggle recording normal iniciado")
         future = asyncio.run_coroutine_threadsafe(self.gopro_manager.toggle_recording(), self.gopro_manager.loop)
         try:
             future.result(timeout=5)
