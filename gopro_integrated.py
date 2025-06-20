@@ -151,7 +151,7 @@ class GoProManager(QThread):
             if not self.recording:
                 print(">>> Attempting download after stopping recording")
                 await asyncio.sleep(2)
-                await self.download_last_video()
+                await self.download_and_log(self)
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
