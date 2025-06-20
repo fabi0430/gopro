@@ -134,6 +134,15 @@ class GoProManager(QThread):
 
             # Obtener estado actual real de la GoPro
             state = await self.gopro.http_command.get_camera_state()
+
+            # Verificar si hubo error
+            if hasattr(state, 'error') and state.error:
+                raise RuntimeError(f"Error al obtener estado de cámara: {state.error}")
+
+            # Verificar estructura antes de acceder
+            if not hasattr(state, 'status') or not hasattr(state.status, 'video'):
+                raise RuntimeError("Estado de cámara no tiene información de video")
+
             recording_now = state.status.video.recording
             print("Estado actual real:", recording_now)
 
@@ -145,7 +154,7 @@ class GoProManager(QThread):
             print("HTTP response:", response)
 
             if not response.ok:
-                raise RuntimeError(f"GoPro responded with error: {response.status_code}")
+                raise RuntimeError(f"GoPro respondió con error: {response.status_code}")
 
             self.recording = not recording_now
             status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
