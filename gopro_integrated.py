@@ -144,11 +144,14 @@ class GoProManager(QThread):
             resp = await self.gopro.http_command.set_shutter(shutter=toggle)
             print("HTTP set_shutter response:", resp)
 
+            status = "🔴 Recording started" if encoding == False else "⏹️ Recording stopped"
+            self.status_update.emit(status)
+
             if not resp.ok:
                 raise RuntimeError(f"GoPro error: {resp.status}")
 
             self.recording = not recording_now
-            status = "🔴 Recording started" if encoding else "⏹️ Recording stopped"
+            status = "🔴 Recording started" if encoding==False else "⏹️ Recording stopped"
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
 
