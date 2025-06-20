@@ -128,9 +128,6 @@ class GoProManager(QThread):
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
         try:
-            self.recording = not self.recording
-            self.recording_changed.emit(self.recording)  # <- Nueva línea
-
             print(">>> toggle_recording called")
             self.status_update.emit("🎬 Attempting to toggle recording...")
 
@@ -144,6 +141,7 @@ class GoProManager(QThread):
                 raise RuntimeError(f"GoPro responded with error: {response.status_code}")
 
             self.recording = not self.recording
+            self.recording_changed.emit(self.recording)  # <- Nueva línea
             status = "🔴 Recording started" if self.recording else "⏹️ Recording stopped"
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
