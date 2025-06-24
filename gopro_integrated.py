@@ -11,9 +11,10 @@ from open_gopro import WirelessGoPro
 from open_gopro.models import constants, streaming
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QTableWidget, QTableWidgetItem, QGroupBox,
-                             QSlider, QGridLayout, QMessageBox)
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+                             QSlider, QGridLayout, QMessageBox, QDialog, QLineEdit, QButtonGroup, QSpacerItem,
+                            QSizePolicy, QFrame)
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent
+from PyQt5.QtGui import QImage, QPixmap, QIntValidator
 import platform
 
 # Configuration
@@ -81,6 +82,188 @@ class PositionServer(QThread):
             self.server_socket.close()
 
 
+class CNCPanel(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manual CNC Control Panel")
+        self.setFixedSize(400, 600)
+
+        # Initialize variables
+        self.feeder_velocity = 600
+        self.single_jump = 1.0  # Default jump value
+        self.y_positive = False
+        self.y_negative = False
+        self.x_positive = False
+        self.x_negative = False
+
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        # Velocity control section
+        velocity_group = QGroupBox("Velocity Control (F)")
+        velocity_layout = QVBoxLayout()
+
+        # Velocity input
+        self.velocity_input = QLineEdit(str(self.feeder_velocity))
+        self.velocity_input.setValidator(QIntValidator(1, 6000))
+        velocity_layout.addWidget(self.velocity_input)
+
+        # Confirm button
+        confirm_btn = QPushButton("Confirm Velocity")
+        confirm_btn.clicked.connect(self.confirm_velocity)
+        velocity_layout.addWidget(confirm_btn)
+
+        # Current velocity display
+        self.velocity_display = QLabel(f"F: {self.feeder_velocity}")
+        velocity_layout.addWidget(self.velocity_display)
+
+        # Jump value selection
+        self.jump_group = QButtonGroup(self)  # Hacerlo atributo de la clase
+        self.jump_group.setExclusive(True)  # Esto hace que solo un botón pueda estar seleccionado
+        jump_layout = QHBoxLayout()
+        jump_values = [0.01, 0.1, 1, 10, 100]
+
+        for value in jump_values:
+            btn = QPushButton(str(value))
+            btn.setCheckable(True)
+            if value == self.single_jump:
+                btn.setChecked(True)
+            btn.clicked.connect(lambda _, v=value: self.set_jump_value(v))
+            self.jump_group.addButton(btn)  # Usar el atributo de clase
+            jump_layout.addWidget(btn)
+
+        velocity_layout.addLayout(jump_layout)
+        velocity_group.setLayout(velocity_layout)
+        layout.addWidget(velocity_group)
+
+        # D-pad section
+        dpad_group = QGroupBox("Movement Control")
+        dpad_layout = QGridLayout()
+
+        # D-pad buttons
+        self.y_plus_btn = QPushButton("Y+")
+        self.y_minus_btn = QPushButton("Y-")
+        self.x_minus_btn = QPushButton("X-")
+        self.x_plus_btn = QPushButton("X+")
+
+        # Style for pressed buttons
+        self.pressed_style = "background-color: #4CAF50; color: white;"
+        self.released_style = ""
+
+        # Configure buttons
+        for btn in [self.y_plus_btn, self.y_minus_btn, self.x_minus_btn, self.x_plus_btn]:
+            btn.setCheckable(True)
+            btn.setStyleSheet(self.released_style)
+
+        # Arrange buttons in a cross pattern
+        dpad_layout.addWidget(self.y_plus_btn, 0, 1)
+        dpad_layout.addWidget(self.y_minus_btn, 2, 1)
+        dpad_layout.addWidget(self.x_minus_btn, 1, 0)
+        dpad_layout.addWidget(self.x_plus_btn, 1, 2)
+
+        # Connect button signals
+        self.y_plus_btn.clicked.connect(lambda: self.set_direction('y_positive', self.y_plus_btn))
+        self.y_minus_btn.clicked.connect(lambda: self.set_direction('y_negative', self.y_minus_btn))
+        self.x_minus_btn.clicked.connect(lambda: self.set_direction('x_negative', self.x_minus_btn))
+        self.x_plus_btn.clicked.connect(lambda: self.set_direction('x_positive', self.x_plus_btn))
+
+        dpad_group.setLayout(dpad_layout)
+        layout.addWidget(dpad_group)
+
+        # Controls list section
+        controls_group = QGroupBox("Keyboard Controls")
+        controls_layout = QVBoxLayout()
+
+        # List of controls
+        controls = [
+            "W: Y+",
+            "A: X-",
+            "S: Y-",
+            "D: X+",
+            "1: Save position 1",
+            "2: Save position 2",
+            "3: Save position 3",
+            "4: Save position 4",
+            "5: Save position 5",
+            "6: Save position 6",
+            "7: Save position 7",
+            "8: Save position 8",
+            "9: Save position 9",
+            "0: Save position 10"
+        ]
+
+        for control in controls:
+            controls_layout.addWidget(QLabel(f"- {control}"))
+
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
+
+        self.setLayout(layout)
+
+        # Install event filter for keyboard controls
+        self.installEventFilter(self)
+
+    def confirm_velocity(self):
+        text = self.velocity_input.text()
+        if text:
+            try:
+                velocity = int(text)
+                if 1 <= velocity <= 6000:
+                    self.feeder_velocity = velocity
+                    self.velocity_display.setText(f"F: {self.feeder_velocity}")
+                else:
+                    QMessageBox.warning(self, "Invalid Value", "Velocity must be between 1 and 6000")
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Input", "Please enter a valid number")
+
+    def set_jump_value(self, value):
+        self.single_jump = value
+        print(f"Jump value set to: {self.single_jump}")  # Opcional: para depuración
+
+    def set_direction(self, direction, button):
+        # Update direction state
+        if direction == 'y_positive':
+            self.y_positive = button.isChecked()
+        elif direction == 'y_negative':
+            self.y_negative = button.isChecked()
+        elif direction == 'x_positive':
+            self.x_positive = button.isChecked()
+        elif direction == 'x_negative':
+            self.x_negative = button.isChecked()
+
+        # Update button appearance
+        button.setStyleSheet(self.pressed_style if button.isChecked() else self.released_style)
+
+    def eventFilter(self, source, event):
+        # Handle keyboard events
+        if event.type() == QEvent.KeyPress or event.type() == QEvent.KeyRelease:
+            pressed = event.type() == QEvent.KeyPress
+
+            if event.key() == Qt.Key_W:
+                self.y_positive = pressed
+                self.y_plus_btn.setChecked(pressed)
+                self.y_plus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
+                return True
+            elif event.key() == Qt.Key_S:
+                self.y_negative = pressed
+                self.y_minus_btn.setChecked(pressed)
+                self.y_minus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
+                return True
+            elif event.key() == Qt.Key_A:
+                self.x_negative = pressed
+                self.x_minus_btn.setChecked(pressed)
+                self.x_minus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
+                return True
+            elif event.key() == Qt.Key_D:
+                self.x_positive = pressed
+                self.x_plus_btn.setChecked(pressed)
+                self.x_plus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
+                return True
+
+        return super().eventFilter(source, event)
+
 class MediaHttpGetter:
     pass
 
@@ -104,7 +287,6 @@ class GoProManager(QThread):
         self.show_filters = False
         self.loop = None
         self.stream_url = None
-        self.filenameint = 0
 
     async def initialize(self):
         try:
@@ -378,18 +560,6 @@ class MainWindow(QMainWindow):
         # Left panel (GoPro and controls)
         left_panel = QVBoxLayout()
 
-        # GoPro video group
-        gopro_group = QGroupBox("GoPro View - Red X Detection")
-        gopro_layout = QVBoxLayout()
-
-        self.gopro_label = QLabel()
-        self.gopro_label.setAlignment(Qt.AlignCenter)
-        self.gopro_label.setMinimumSize(640, 480)
-
-        gopro_layout.addWidget(self.gopro_label)
-        gopro_group.setLayout(gopro_layout)
-        left_panel.addWidget(gopro_group)
-
         # GoPro controls group
         control_group = QGroupBox("GoPro Controls")
         control_layout = QGridLayout()
@@ -400,8 +570,8 @@ class MainWindow(QMainWindow):
         self.set_ref_btn = QPushButton("Set Reference Position")
         self.set_ref_btn.clicked.connect(self.set_reference_position)
 
-        self.show_filters_btn = QPushButton("Show/Hide Filters")
-        self.show_filters_btn.clicked.connect(self.toggle_filters)
+        self.manual_control_btn = QPushButton("Activate manual control")
+        self.manual_control_btn.clicked.connect(self.show_cnc_panel)
 
         self.exit_btn = QPushButton("Exit Program")
         self.exit_btn.setStyleSheet("background-color: #FF4444; color: white;")
@@ -409,7 +579,7 @@ class MainWindow(QMainWindow):
 
         control_layout.addWidget(self.record_btn, 0, 0)
         control_layout.addWidget(self.set_ref_btn, 0, 1)
-        control_layout.addWidget(self.show_filters_btn, 1, 0)
+        control_layout.addWidget(self.manual_control_btn, 1, 0)
         control_layout.addWidget(self.exit_btn, 1, 1)
         control_group.setLayout(control_layout)
         left_panel.addWidget(control_group)
@@ -561,8 +731,9 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(callback)
 
-    def toggle_filters(self):
-        self.gopro_manager.toggle_filters()
+    def show_cnc_panel(self):
+        self.cnc_panel = CNCPanel(self)
+        self.cnc_panel.show()
 
     def update_hsv_thresholds(self):
         hsv_values = [s.value() for s in self.sliders]
