@@ -453,8 +453,8 @@ class GoProManager(QThread):
 
     def process_frame(self, frame):
         # Define the region of interest
-        x_start, x_end = 270, 810  # Horizontal range
-        y_start, y_end = 480, 1440  # Vertical range
+        x_start, x_end = 480, 1440  # Horizontal range
+        y_start, y_end = 270, 810  # Vertical range
 
         # Extract the ROI from the frame
         roi = frame[y_start:y_end, x_start:x_end]
