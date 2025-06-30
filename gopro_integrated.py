@@ -452,8 +452,15 @@ class GoProManager(QThread):
             await self.gopro.close()
 
     def process_frame(self, frame):
-        # Convert BGR to HSV
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Define the region of interest
+        x_start, x_end = 270, 810  # Horizontal range
+        y_start, y_end = 480, 1440  # Vertical range
+
+        # Extract the ROI from the frame
+        roi = frame[y_start:y_end, x_start:x_end]
+
+        # Convert BGR to HSV for the ROI only
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
         # Define red color ranges
         lower_red1 = np.array([self.hsv_values[0], self.hsv_values[4], self.hsv_values[6]])
@@ -481,9 +488,12 @@ class GoProManager(QThread):
             largest_contour = max(contours, key=cv2.contourArea)
             if cv2.contourArea(largest_contour) > 500:
                 x, y, w, h = cv2.boundingRect(largest_contour)
+                # Adjust coordinates to full frame
+                x += x_start
+                y += y_start
                 current_pos = (x + w // 2, y + h // 2)
 
-                # Draw rectangle and center
+                # Draw rectangle and center on the full frame
                 cv2.rectangle(processed_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 cv2.circle(processed_frame, current_pos, 5, (0, 255, 0), -1)
                 cv2.putText(processed_frame, 'X', (x, y - 10),
