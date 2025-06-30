@@ -570,6 +570,18 @@ class MainWindow(QMainWindow):
         # Left panel (GoPro and controls)
         left_panel = QVBoxLayout()
 
+        # GoPro video group
+        gopro_group = QGroupBox("GoPro View - Red X Detection")
+        gopro_layout = QVBoxLayout()
+
+        self.gopro_label = QLabel()
+        self.gopro_label.setAlignment(Qt.AlignCenter)
+        self.gopro_label.setMinimumSize(640, 480)
+
+        gopro_layout.addWidget(self.gopro_label)
+        gopro_group.setLayout(gopro_layout)
+        left_panel.addWidget(gopro_group)
+
         # GoPro controls group
         control_group = QGroupBox("GoPro Controls")
         control_layout = QGridLayout()
