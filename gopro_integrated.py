@@ -373,30 +373,27 @@ class GoProManager(QThread):
             if not files:
                 raise RuntimeError("No media files found")
 
-            # Seleccionar el último por nombre (usualmente correlativo)
+            # Elegir el más reciente usando filename correlativo
             last = max(files, key=lambda x: x.filename)
             print(f"DEBUG archivo más reciente: {last.filename}")
 
-            # Obtener URL de descarga
-            download_url = await last.get_download_url()
-            print("DEBUG download URL:", download_url)
-
-            # Crear nombre con fecha
+            # Preparar nombre con fecha
             fecha_str = datetime.now().strftime("%Y_%m_%d")
             ext = os.path.splitext(last.filename)[1]
             new_filename = f"{fecha_str}{ext}"
-            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-            save_path = os.path.join(DOWNLOAD_DIR, new_filename)
 
-            # Descargar el archivo
-            async with aiohttp.ClientSession() as sess:
-                async with sess.get(download_url) as resp:
-                    if resp.status != 200:
-                        raise RuntimeError(f"HTTP {resp.status}")
-                    with open(save_path, "wb") as f:
-                        f.write(await resp.read())
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+            dest_path = os.path.join(DOWNLOAD_DIR, new_filename)
+
+            # Descargar desde la GoPro y guardarlo localmente
+            # open_gopro guardará en la ruta relativa (cámara), así que movemos después
+            temp_path = await self.gopro.http_command.download_file(camera_file=last.filename)
+            # `temp_path` devuelve ruta local al archivo descargado
+
+            os.rename(temp_path, dest_path)
 
             self.status_update.emit(f"✅ Video downloaded: {new_filename}")
+            print(f">>> Archivo almacenado en: {dest_path}")
 
         except Exception as e:
             error_msg = f"⚠️ Download error: {e}"
