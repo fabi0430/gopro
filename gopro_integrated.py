@@ -339,7 +339,7 @@ class GoProManager(QThread):
                 # A veces la GoPro graba pero no responde
                 resp = None
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
             # Confirmar estado real
             confirm_resp = await self.gopro.http_command.get_camera_state()
@@ -356,7 +356,7 @@ class GoProManager(QThread):
 
             if not recording_confirmed and recording_now:
                 print(">>> Downloading video after stop...")
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 await self.download_and_log()
 
         except Exception as e:
@@ -373,27 +373,28 @@ class GoProManager(QThread):
             if not files:
                 raise RuntimeError("No media files found")
 
-            # Buscar archivo más reciente por nombre (GH01XXXX.MP4)
+            # Seleccionar el último por nombre (usualmente correlativo)
             last = max(files, key=lambda x: x.filename)
             print(f"DEBUG archivo más reciente: {last.filename}")
 
-            # Usar fecha actual como nombre
+            # Obtener URL de descarga
+            download_url = await last.get_download_url()
+            print("DEBUG download URL:", download_url)
+
+            # Crear nombre con fecha
             fecha_str = datetime.now().strftime("%Y_%m_%d")
             ext = os.path.splitext(last.filename)[1]
             new_filename = f"{fecha_str}{ext}"
-
-            # Crear carpeta si no existe
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
             save_path = os.path.join(DOWNLOAD_DIR, new_filename)
 
-            # Descargar archivo
+            # Descargar el archivo
             async with aiohttp.ClientSession() as sess:
-                resp = await sess.get(last.download_url)
-                print("DEBUG download URL:", last.download_url)
-                if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status}")
-                with open(save_path, "wb") as f:
-                    f.write(await resp.read())
+                async with sess.get(download_url) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    with open(save_path, "wb") as f:
+                        f.write(await resp.read())
 
             self.status_update.emit(f"✅ Video downloaded: {new_filename}")
 
