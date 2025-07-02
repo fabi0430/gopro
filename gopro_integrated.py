@@ -19,7 +19,8 @@ import platform
 
 # Configuration
 STREAM_PORT = 8554
-DOWNLOAD_DIR = "GoProDownloads"
+DOWNLOAD_DIR = "/home/dtc_dresden/Go_Pro_Videos"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
 
@@ -371,9 +372,20 @@ class GoProManager(QThread):
             if not files:
                 raise RuntimeError("No media files found")
 
-            last = max(files, key=lambda x: x.created)
-            fname = last.filename
-            save_path = os.path.join(DOWNLOAD_DIR, fname)
+            # Buscar archivo más reciente
+            last = max(files, key=lambda x: x.modification_time)
+            print(f"DEBUG archivo más reciente: {last.filename}")
+
+            # Extraer fecha y generar nuevo nombre
+            fecha_str = last.modification_time.strftime("%Y_%m_%d")
+            ext = os.path.splitext(last.filename)[1]  # conserva extensión (.MP4)
+            new_filename = f"{fecha_str}{ext}"
+
+            # Crear carpeta si no existe
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+            save_path = os.path.join(DOWNLOAD_DIR, new_filename)
+
+            # Descargar archivo
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.get(last.download_url)
                 print("DEBUG download URL:", last.download_url)
@@ -381,9 +393,13 @@ class GoProManager(QThread):
                     raise RuntimeError(f"HTTP {resp.status}")
                 with open(save_path, "wb") as f:
                     f.write(await resp.read())
-            self.status_update.emit(f"✅ Video downloaded: {fname}")
+
+            self.status_update.emit(f"✅ Video downloaded: {new_filename}")
+
         except Exception as e:
-            self.status_update.emit(f"⚠️ Download error: {e}")
+            error_msg = f"⚠️ Download error: {e}"
+            print("❌", error_msg)
+            self.status_update.emit(error_msg)
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
