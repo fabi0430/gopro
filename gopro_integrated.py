@@ -332,7 +332,7 @@ class GoProManager(QThread):
                 raise RuntimeError(f"GoPro error: {resp.status}")
 
             # Esperar y verificar nuevo estado
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             #confirm_resp = await self.gopro.http_command.get_camera_state()
             #confirmed_encoding = confirm_resp.data.get(constants.StatusId.ENCODING, 0)
             #recording_confirmed = bool(confirmed_encoding)
@@ -342,11 +342,12 @@ class GoProManager(QThread):
             #self.recording = recording_confirmed
 
             # ✅ Usar el estado confirmado para emitir el mensaje
-            status = "🔴 Recording started" if encoding else "⏹️ Recording stopped"
+
+            status = "⏹️ Recording stopped" if encoding else "🔴 Recording started"
             self.status_update.emit(status)
             print(">>> Recording state toggled successfully")
 
-            if not encoding:
+            if encoding:
                 print(">>> Downloading video after stop...")
                 await asyncio.sleep(2)
                 await self.download_and_log()
