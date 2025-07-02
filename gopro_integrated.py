@@ -309,46 +309,49 @@ class GoProManager(QThread):
         except Exception as e:
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
 
+    import asyncio
+
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
-            # Obtener estado actual de grabación
             state_resp = await self.gopro.http_command.get_camera_state()
             encoding = state_resp.data.get(constants.StatusId.ENCODING, 0)
-            print(state_resp)
             recording_now = bool(encoding)
             print("Estado actual real (ENCODING):", encoding)
 
-            # Decidir acción (toggle)
             toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
-            # Enviar comando de grabación
-            resp = await self.gopro.http_command.set_shutter(shutter=toggle)
+            # ⏱️ TIMEOUT al enviar comando
+            try:
+                resp = await asyncio.wait_for(
+                    self.gopro.http_command.set_shutter(shutter=toggle),
+                    timeout=5  # segundos
+                )
+                print("HTTP set_shutter response:", resp)
+            except asyncio.TimeoutError:
+                print("⏰ Timeout al enviar set_shutter (grabando probablemente)")
+                # A veces la GoPro graba pero no responde
+                resp = None
+
             await asyncio.sleep(2)
-            print("HTTP set_shutter response:", resp)
 
-            if not resp.ok:
-                raise RuntimeError(f"GoPro error: {resp.status}")
-
-            # ✅ Volver a consultar el estado después del toggle
+            # Confirmar estado real
             confirm_resp = await self.gopro.http_command.get_camera_state()
             confirmed_encoding = confirm_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_confirmed = bool(confirmed_encoding)
             print("Estado confirmado (ENCODING):", confirmed_encoding)
 
-            # Actualizar GUI con estado correcto
+            # Actualizar GUI
             if recording_confirmed:
-                status = "🔴 Recording started"
+                self.status_update.emit("🔴 Recording started")
             else:
-                status = "⏹️ Recording stopped"
-            self.status_update.emit(status)
+                self.status_update.emit("⏹️ Recording stopped")
             print(">>> Recording state toggled successfully")
 
-            # Si se detuvo la grabación, descargar video
             if not recording_confirmed and recording_now:
                 print(">>> Downloading video after stop...")
                 await asyncio.sleep(2)
