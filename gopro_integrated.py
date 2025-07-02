@@ -373,11 +373,11 @@ class GoProManager(QThread):
             if not files:
                 raise RuntimeError("No media files found")
 
-            # Elegir el más reciente usando filename correlativo
+            # Elegir el más reciente usando filename
             last = max(files, key=lambda x: x.filename)
             print(f"DEBUG archivo más reciente: {last.filename}")
 
-            # Preparar nombre con fecha
+            # Crear nombre de destino con fecha
             fecha_str = datetime.now().strftime("%Y_%m_%d")
             ext = os.path.splitext(last.filename)[1]
             new_filename = f"{fecha_str}{ext}"
@@ -385,11 +385,13 @@ class GoProManager(QThread):
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
             dest_path = os.path.join(DOWNLOAD_DIR, new_filename)
 
-            # Descargar desde la GoPro y guardarlo localmente
-            # open_gopro guardará en la ruta relativa (cámara), así que movemos después
-            temp_path = await self.gopro.http_command.download_file(camera_file=last.filename)
-            # `temp_path` devuelve ruta local al archivo descargado
+            # Descargar archivo
+            download_resp = await self.gopro.http_command.download_file(camera_file=last.filename)
 
+            # ✅ Obtener ruta del archivo desde .data
+            temp_path = download_resp.data  # esto es un str: la ruta local temporal
+
+            # Mover el archivo a tu carpeta final con nuevo nombre
             os.rename(temp_path, dest_path)
 
             self.status_update.emit(f"✅ Video downloaded: {new_filename}")
