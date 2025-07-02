@@ -4,6 +4,7 @@ import numpy as np
 import asyncio
 import aiohttp
 import os
+from datetime import datetime
 import socket
 from threading import Thread
 import threading
@@ -19,7 +20,7 @@ import platform
 
 # Configuration
 STREAM_PORT = 8554
-DOWNLOAD_DIR = "/home/dtc_dresden/Go_Pro_Videos"
+DOWNLOAD_DIR = "/home/dtc-dresden/Go_Pro_Videos"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 POSITION_SERVER_PORT = 65432
 RECONNECT_DELAY = 3
@@ -372,13 +373,13 @@ class GoProManager(QThread):
             if not files:
                 raise RuntimeError("No media files found")
 
-            # Buscar archivo más reciente
-            last = max(files, key=lambda x: x.modification_time)
+            # Buscar archivo más reciente por nombre (GH01XXXX.MP4)
+            last = max(files, key=lambda x: x.filename)
             print(f"DEBUG archivo más reciente: {last.filename}")
 
-            # Extraer fecha y generar nuevo nombre
-            fecha_str = last.modification_time.strftime("%Y_%m_%d")
-            ext = os.path.splitext(last.filename)[1]  # conserva extensión (.MP4)
+            # Usar fecha actual como nombre
+            fecha_str = datetime.now().strftime("%Y_%m_%d")
+            ext = os.path.splitext(last.filename)[1]
             new_filename = f"{fecha_str}{ext}"
 
             # Crear carpeta si no existe
