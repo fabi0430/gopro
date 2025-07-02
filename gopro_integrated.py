@@ -315,6 +315,7 @@ class GoProManager(QThread):
 
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
+
         try:
             self.status_update.emit("🎬 Attempting to toggle recording...")
             await asyncio.sleep(1)
@@ -363,6 +364,14 @@ class GoProManager(QThread):
             error_msg = f"Recording: error → {e}"
             print("❌", error_msg)
             self.status_update.emit(error_msg)
+
+    async def toggle_lapses(self):
+        for i in range(20):
+            await asyncio.sleep(10)
+            await self.toggle_recording()
+            await asyncio.sleep(10)
+            await self.toggle_recording()
+
 
     async def download_and_log(self):
         print("Rutina de guardado de archivo iniciada")
@@ -764,8 +773,11 @@ class MainWindow(QMainWindow):
         print("Botón presionado, enviando coroutine")
 
         future = asyncio.run_coroutine_threadsafe(
-            self.gopro_manager.toggle_recording(), self.gopro_loop
+            self.gopro_manager.toggle_lapses(), self.gopro_loop
         )
+        #future = asyncio.run_coroutine_threadsafe(
+        #    self.gopro_manager.toggle_recording(), self.gopro_loop
+        #)
 
         def callback(fut):
             try:
