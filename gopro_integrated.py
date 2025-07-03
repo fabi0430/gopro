@@ -122,8 +122,8 @@ class CNCPanel(QDialog):
         velocity_layout.addWidget(self.velocity_display)
 
         # Jump value selection
-        self.jump_group = QButtonGroup(self)  # Hacerlo atributo de la clase
-        self.jump_group.setExclusive(True)  # Esto hace que solo un botón pueda estar seleccionado
+        self.jump_group = QButtonGroup(self)  #    Make class attribute
+        self.jump_group.setExclusive(True)  # Only one button can be selected
         jump_layout = QHBoxLayout()
         jump_values = [0.01, 0.1, 1, 10, 100]
 
@@ -133,7 +133,7 @@ class CNCPanel(QDialog):
             if value == self.single_jump:
                 btn.setChecked(True)
             btn.clicked.connect(lambda _, v=value: self.set_jump_value(v))
-            self.jump_group.addButton(btn)  # Usar el atributo de clase
+            self.jump_group.addButton(btn)  # Use class attribute
             jump_layout.addWidget(btn)
 
         velocity_layout.addLayout(jump_layout)
@@ -222,7 +222,7 @@ class CNCPanel(QDialog):
 
     def set_jump_value(self, value):
         self.single_jump = value
-        print(f"Jump value set to: {self.single_jump}")  # Opcional: para depuración
+        print(f"Jump value set to: {self.single_jump}")  # Optional for depuration
 
     def set_direction(self, direction, button):
         # Update direction state
@@ -311,8 +311,6 @@ class GoProManager(QThread):
         except Exception as e:
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
 
-    import asyncio
-
     async def toggle_recording(self):
         print("Toggle recording async iniciado")
 
@@ -323,32 +321,32 @@ class GoProManager(QThread):
             state_resp = await self.gopro.http_command.get_camera_state()
             encoding = state_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_now = bool(encoding)
-            print("Estado actual real (ENCODING):", encoding)
+            print("Current real state (ENCODING):", encoding)
 
             toggle = constants.Toggle.DISABLE if recording_now else constants.Toggle.ENABLE
             print(f"Toggle value: {toggle}")
 
-            # ⏱️ TIMEOUT al enviar comando
+            # ⏱️ TIMEOUT at sending command
             try:
                 resp = await asyncio.wait_for(
                     self.gopro.http_command.set_shutter(shutter=toggle),
-                    timeout=5  # segundos
+                    timeout=5  # seconds
                 )
                 print("HTTP set_shutter response:", resp)
             except asyncio.TimeoutError:
-                print("⏰ Timeout al enviar set_shutter (grabando probablemente)")
-                # A veces la GoPro graba pero no responde
+                print("⏰ Timeout at sending shutter (probably recording)")
+                # When the GoPro starts recording, it doesn't send back the signal
                 resp = None
 
             await asyncio.sleep(1)
 
-            # Confirmar estado real
+            # Confirm real state
             confirm_resp = await self.gopro.http_command.get_camera_state()
             confirmed_encoding = confirm_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_confirmed = bool(confirmed_encoding)
-            print("Estado confirmado (ENCODING):", confirmed_encoding)
+            print("Confirmed state (ENCODING):", confirmed_encoding)
 
-            # Actualizar GUI
+            # Update GUI
             if recording_confirmed:
                 self.status_update.emit("🔴 Recording started")
             else:
@@ -367,14 +365,14 @@ class GoProManager(QThread):
 
     async def toggle_lapses(self):
         for i in range(20):
-            await asyncio.sleep(10)
+            await asyncio.sleep(300)
             await self.toggle_recording()
-            await asyncio.sleep(10)
+            await asyncio.sleep(300)
             await self.toggle_recording()
 
 
     async def download_and_log(self):
-        print("Rutina de guardado de archivo iniciada")
+        print("Download routine started")
         try:
             media_resp = await self.gopro.http_command.get_media_list()
             files = media_resp.data.files
@@ -384,7 +382,7 @@ class GoProManager(QThread):
 
             # Elegir el más reciente usando filename
             last = max(files, key=lambda x: x.filename)
-            print(f"DEBUG archivo más reciente: {last.filename}")
+            print(f"DEBUG most recent file: {last.filename}")
 
             # Crear nombre de destino con fecha
             fecha_str = datetime.now().strftime("%Y_%m_%d")
@@ -404,7 +402,7 @@ class GoProManager(QThread):
             os.rename(temp_path, dest_path)
 
             self.status_update.emit(f"✅ Video downloaded: {new_filename}")
-            print(f">>> Archivo almacenado en: {dest_path}")
+            print(f">>> File saved in: {dest_path}")
 
         except Exception as e:
             error_msg = f"⚠️ Download error: {e}"
@@ -770,8 +768,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No X position detected")
 
     def handle_record_click(self):
-        print("Botón presionado, enviando coroutine")
-
         future = asyncio.run_coroutine_threadsafe(
             self.gopro_manager.toggle_lapses(), self.gopro_loop
         )
@@ -782,9 +778,9 @@ class MainWindow(QMainWindow):
         def callback(fut):
             try:
                 result = fut.result()
-                print("Grabación finalizada:", result)
+                print("Recording ended:", result)
             except Exception as e:
-                print("Error en grabación:", e)
+                print("Recording error:", e)
 
         future.add_done_callback(callback)
 
