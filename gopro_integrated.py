@@ -353,10 +353,10 @@ class GoProManager(QThread):
                 self.status_update.emit("⏹️ Recording stopped")
             print(">>> Recording state toggled successfully")
 
-            if not recording_confirmed and recording_now:
-                print(">>> Downloading video after stop...")
-                await asyncio.sleep(1)
-                await self.download_and_log()
+            #if not recording_confirmed and recording_now:
+            #    print(">>> Downloading video after stop...")
+            #    await asyncio.sleep(1)
+            #    await self.download_and_log()
 
         except Exception as e:
             error_msg = f"Recording: error → {e}"
@@ -364,7 +364,7 @@ class GoProManager(QThread):
             self.status_update.emit(error_msg)
 
     async def toggle_lapses(self):
-        for i in range(20):
+        for i in range(40):
             await asyncio.sleep(300)
             await self.toggle_recording()
             await asyncio.sleep(300)
