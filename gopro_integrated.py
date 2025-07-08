@@ -2,7 +2,6 @@ import sys
 import cv2
 import numpy as np
 import asyncio
-import aiohttp
 import os
 from datetime import datetime
 import socket
@@ -292,7 +291,7 @@ class GoProManager(QThread):
 
     async def initialize(self):
         try:
-            self.gopro = WirelessGoPro()
+            self.gopro = WirelessGoPro(ble_timeout=15, ble_retries=3)
             await self.gopro.open()
             self.status_update.emit("✅ Connected to GoPro")
             return True
@@ -362,13 +361,6 @@ class GoProManager(QThread):
             error_msg = f"Recording: error → {e}"
             print("❌", error_msg)
             self.status_update.emit(error_msg)
-
-    async def toggle_lapses(self):
-        for i in range(40):
-            await asyncio.sleep(300)
-            await self.toggle_recording()
-            await asyncio.sleep(300)
-            await self.toggle_recording()
 
 
     async def download_and_log(self):
@@ -769,11 +761,8 @@ class MainWindow(QMainWindow):
 
     def handle_record_click(self):
         future = asyncio.run_coroutine_threadsafe(
-            self.gopro_manager.toggle_lapses(), self.gopro_loop
+            self.gopro_manager.toggle_recording(), self.gopro_loop
         )
-        #future = asyncio.run_coroutine_threadsafe(
-        #    self.gopro_manager.toggle_recording(), self.gopro_loop
-        #)
 
         def callback(fut):
             try:
