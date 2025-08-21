@@ -216,8 +216,11 @@ class CNCPanel(QDialog):
     # ----------------------------
     def send_gcode_command(self, command):
         try:
-            url = f"http://{self.duet_ip}/rr_gcode?gcode={command}"
-            r = requests.get(url, timeout=2)
+            r = requests.get(
+                f"http://{self.duet_ip}/rr_gcode",
+                params={"gcode": command},
+                timeout=2
+            )
             if r.status_code == 200:
                 data = r.json()
                 if data.get("err") == 0:
@@ -272,19 +275,26 @@ class CNCPanel(QDialog):
         self.jog_timer.stop()
         self.active_direction = None
 
-    def send_continuous_move(self):
-        move_code = None
-        if self.active_direction == 'y_positive':
-            move_code = f"G91\nG1 Y{self.single_jump} F{self.feeder_velocity}"
-        elif self.active_direction == 'y_negative':
-            move_code = f"G91\nG1 Y-{self.single_jump} F{self.feeder_velocity}"
-        elif self.active_direction == 'x_positive':
-            move_code = f"G91\nG1 X{self.single_jump} F{self.feeder_velocity}"
-        elif self.active_direction == 'x_negative':
-            move_code = f"G91\nG1 X-{self.single_jump} F{self.feeder_velocity}"
+    def send_sequence(self, commands):
+        ok = True
+        for c in commands:
+            if not self.send_gcode_command(c):
+                ok = False
+        return ok
 
-        if move_code:
-            self.send_gcode_line(move_code)
+    def send_continuous_move(self):
+        if self.active_direction == 'y_positive':
+            move = f"G1 Y{self.single_jump} F{self.feeder_velocity}"
+        elif self.active_direction == 'y_negative':
+            move = f"G1 Y-{self.single_jump} F{self.feeder_velocity}"
+        elif self.active_direction == 'x_positive':
+            move = f"G1 X{self.single_jump} F{self.feeder_velocity}"
+        elif self.active_direction == 'x_negative':
+            move = f"G1 X-{self.single_jump} F{self.feeder_velocity}"
+        else:
+            return
+        # Relative move; you can comment out G90 if you want to stay in relative mode while jogging
+        self.send_sequence(["G91", move, "G90"])
 
     # ----------------------------
     # Control por teclado
@@ -826,7 +836,7 @@ class MainWindow(QMainWindow):
         future.add_done_callback(callback)
 
     def show_cnc_panel(self):
-        self.cnc_panel = CNCPanel(self)
+        self.cnc_panel = CNCPanel(duet_ip="192.168.185.2", parent=self)
         self.cnc_panel.show()
 
     def update_hsv_thresholds(self):
