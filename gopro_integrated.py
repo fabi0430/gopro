@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent
 from PyQt5.QtGui import QImage, QPixmap, QIntValidator
 import platform
+import requests
 
 # Configuration
 STREAM_PORT = 8554
@@ -84,128 +85,115 @@ class PositionServer(QThread):
 
 
 class CNCPanel(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, duet_ip="192.168.185.2", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Manual CNC Control Panel")
         self.setFixedSize(400, 600)
 
-        # Initialize variables
+        # Configuración
+        self.duet_ip = duet_ip
         self.feeder_velocity = 600
-        self.single_jump = 1.0  # Default jump value
+        self.single_jump = 1.0  # Paso por defecto
+
+        # Estados de movimiento
         self.y_positive = False
         self.y_negative = False
         self.x_positive = False
         self.x_negative = False
+
+        # Timer para jog continuo
+        self.jog_timer = QTimer()
+        self.jog_timer.timeout.connect(self.send_continuous_move)
+        self.jog_interval = 100  # ms
+
+        # Estilos botones
+        self.pressed_style = "background-color: #4CAF50; color: white;"
+        self.released_style = ""
 
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout()
 
-        # Velocity control section
+        # --- Velocity control ---
         velocity_group = QGroupBox("Velocity Control (F)")
         velocity_layout = QVBoxLayout()
 
-        # Velocity input
         self.velocity_input = QLineEdit(str(self.feeder_velocity))
         self.velocity_input.setValidator(QIntValidator(1, 6000))
         velocity_layout.addWidget(self.velocity_input)
 
-        # Confirm button
         confirm_btn = QPushButton("Confirm Velocity")
         confirm_btn.clicked.connect(self.confirm_velocity)
         velocity_layout.addWidget(confirm_btn)
 
-        # Current velocity display
         self.velocity_display = QLabel(f"F: {self.feeder_velocity}")
         velocity_layout.addWidget(self.velocity_display)
 
         # Jump value selection
-        self.jump_group = QButtonGroup(self)  #    Make class attribute
-        self.jump_group.setExclusive(True)  # Only one button can be selected
+        self.jump_group = QButtonGroup(self)
+        self.jump_group.setExclusive(True)
         jump_layout = QHBoxLayout()
-        jump_values = [0.01, 0.1, 1, 10, 100]
-
-        for value in jump_values:
+        for value in [0.01, 0.1, 1, 10, 100]:
             btn = QPushButton(str(value))
             btn.setCheckable(True)
             if value == self.single_jump:
                 btn.setChecked(True)
             btn.clicked.connect(lambda _, v=value: self.set_jump_value(v))
-            self.jump_group.addButton(btn)  # Use class attribute
+            self.jump_group.addButton(btn)
             jump_layout.addWidget(btn)
-
         velocity_layout.addLayout(jump_layout)
         velocity_group.setLayout(velocity_layout)
         layout.addWidget(velocity_group)
 
-        # D-pad section
+        # --- D-pad section ---
         dpad_group = QGroupBox("Movement Control")
         dpad_layout = QGridLayout()
 
-        # D-pad buttons
         self.y_plus_btn = QPushButton("Y+")
         self.y_minus_btn = QPushButton("Y-")
         self.x_minus_btn = QPushButton("X-")
         self.x_plus_btn = QPushButton("X+")
 
-        # Style for pressed buttons
-        self.pressed_style = "background-color: #4CAF50; color: white;"
-        self.released_style = ""
-
-        # Configure buttons
-        for btn in [self.y_plus_btn, self.y_minus_btn, self.x_minus_btn, self.x_plus_btn]:
+        for btn, direction in [
+            (self.y_plus_btn, 'y_positive'),
+            (self.y_minus_btn, 'y_negative'),
+            (self.x_minus_btn, 'x_negative'),
+            (self.x_plus_btn, 'x_positive')
+        ]:
             btn.setCheckable(True)
             btn.setStyleSheet(self.released_style)
+            btn.pressed.connect(lambda dir=direction, b=btn: self.start_jog(dir, b))
+            btn.released.connect(lambda dir=direction, b=btn: self.stop_jog(dir, b))
 
-        # Arrange buttons in a cross pattern
         dpad_layout.addWidget(self.y_plus_btn, 0, 1)
         dpad_layout.addWidget(self.y_minus_btn, 2, 1)
         dpad_layout.addWidget(self.x_minus_btn, 1, 0)
         dpad_layout.addWidget(self.x_plus_btn, 1, 2)
 
-        # Connect button signals
-        self.y_plus_btn.clicked.connect(lambda: self.set_direction('y_positive', self.y_plus_btn))
-        self.y_minus_btn.clicked.connect(lambda: self.set_direction('y_negative', self.y_minus_btn))
-        self.x_minus_btn.clicked.connect(lambda: self.set_direction('x_negative', self.x_minus_btn))
-        self.x_plus_btn.clicked.connect(lambda: self.set_direction('x_positive', self.x_plus_btn))
-
         dpad_group.setLayout(dpad_layout)
         layout.addWidget(dpad_group)
 
-        # Controls list section
+        # --- Controls list ---
         controls_group = QGroupBox("Keyboard Controls")
         controls_layout = QVBoxLayout()
-
-        # List of controls
-        controls = [
+        for control in [
             "W: Y+",
             "A: X-",
             "S: Y-",
             "D: X+",
-            "1: Save position 1",
-            "2: Save position 2",
-            "3: Save position 3",
-            "4: Save position 4",
-            "5: Save position 5",
-            "6: Save position 6",
-            "7: Save position 7",
-            "8: Save position 8",
-            "9: Save position 9",
-            "0: Save position 10"
-        ]
-
-        for control in controls:
+            "1-0: Save position 1-10"
+        ]:
             controls_layout.addWidget(QLabel(f"- {control}"))
-
         controls_group.setLayout(controls_layout)
         layout.addWidget(controls_group)
 
         self.setLayout(layout)
-
-        # Install event filter for keyboard controls
         self.installEventFilter(self)
 
+    # ----------------------------
+    # Configuración de valores
+    # ----------------------------
     def confirm_velocity(self):
         text = self.velocity_input.text()
         if text:
@@ -221,53 +209,117 @@ class CNCPanel(QDialog):
 
     def set_jump_value(self, value):
         self.single_jump = value
-        print(f"Jump value set to: {self.single_jump}")  # Optional for depuration
+        print(f"Jump value set to: {self.single_jump}")
 
-    def set_direction(self, direction, button):
-        # Update direction state
-        if direction == 'y_positive':
-            self.y_positive = button.isChecked()
-        elif direction == 'y_negative':
-            self.y_negative = button.isChecked()
-        elif direction == 'x_positive':
-            self.x_positive = button.isChecked()
-        elif direction == 'x_negative':
-            self.x_negative = button.isChecked()
+    # ----------------------------
+    # Comunicación con Duet
+    # ----------------------------
+    def send_gcode_command(self, command):
+        try:
+            url = f"http://{self.duet_ip}/rr_gcode?gcode={command}"
+            r = requests.get(url, timeout=2)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("err") == 0:
+                    print(f"GCode ejecutado correctamente: {command}")
+                    return True
+                else:
+                    print(f"Error en GCode: {data}")
+                    return False
+            else:
+                print(f"HTTP Error {r.status_code}")
+                return False
+        except Exception as e:
+            print(f"Error de red: {e}")
+            return False
 
-        # Update button appearance
-        button.setStyleSheet(self.pressed_style if button.isChecked() else self.released_style)
+    def send_gcode_line(self, command):
+        if self.send_gcode_command(command):
+            print(f"✅ Ejecutado: {command}")
+        else:
+            print(f"❌ Error ejecutando: {command}")
 
+    def get_current_position(self):
+        try:
+            requests.get(f"http://{self.duet_ip}/rr_gcode?gcode=M114", timeout=2)
+            import time
+            time.sleep(0.7)
+            r = requests.get(f"http://{self.duet_ip}/rr_reply", timeout=2)
+            raw = r.text
+            print(f"Respuesta cruda: {raw}")
+            import re
+            match = re.search(r"X:([\d\.-]+)\s+Y:([\d\.-]+)", raw)
+            if match:
+                x = match.group(1)[:6]
+                y = match.group(2)[:6]
+                return x, y
+            else:
+                return None, None
+        except Exception as e:
+            print(f"Error obteniendo posición: {e}")
+            return None, None
+
+    # ----------------------------
+    # Jog continuo
+    # ----------------------------
+    def start_jog(self, direction, button):
+        button.setStyleSheet(self.pressed_style)
+        self.active_direction = direction
+        self.jog_timer.start(self.jog_interval)  # Inicia envío periódico
+
+    def stop_jog(self, direction, button):
+        button.setStyleSheet(self.released_style)
+        self.jog_timer.stop()
+        self.active_direction = None
+
+    def send_continuous_move(self):
+        move_code = None
+        if self.active_direction == 'y_positive':
+            move_code = f"G91\nG1 Y{self.single_jump} F{self.feeder_velocity}"
+        elif self.active_direction == 'y_negative':
+            move_code = f"G91\nG1 Y-{self.single_jump} F{self.feeder_velocity}"
+        elif self.active_direction == 'x_positive':
+            move_code = f"G91\nG1 X{self.single_jump} F{self.feeder_velocity}"
+        elif self.active_direction == 'x_negative':
+            move_code = f"G91\nG1 X-{self.single_jump} F{self.feeder_velocity}"
+
+        if move_code:
+            self.send_gcode_line(move_code)
+
+    # ----------------------------
+    # Control por teclado
+    # ----------------------------
     def eventFilter(self, source, event):
-        # Handle keyboard events
-        if event.type() == QEvent.KeyPress or event.type() == QEvent.KeyRelease:
-            pressed = event.type() == QEvent.KeyPress
+        if event.type() == QEvent.KeyPress:
+            key_map = {
+                Qt.Key_W: ('y_positive', self.y_plus_btn),
+                Qt.Key_S: ('y_negative', self.y_minus_btn),
+                Qt.Key_A: ('x_negative', self.x_minus_btn),
+                Qt.Key_D: ('x_positive', self.x_plus_btn)
+            }
+            if event.key() in key_map and not self.jog_timer.isActive():
+                direction, btn = key_map[event.key()]
+                btn.setChecked(True)
+                self.start_jog(direction, btn)
+                return True
 
-            if event.key() == Qt.Key_W:
-                self.y_positive = pressed
-                self.y_plus_btn.setChecked(pressed)
-                self.y_plus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
-                return True
-            elif event.key() == Qt.Key_S:
-                self.y_negative = pressed
-                self.y_minus_btn.setChecked(pressed)
-                self.y_minus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
-                return True
-            elif event.key() == Qt.Key_A:
-                self.x_negative = pressed
-                self.x_minus_btn.setChecked(pressed)
-                self.x_minus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
-                return True
-            elif event.key() == Qt.Key_D:
-                self.x_positive = pressed
-                self.x_plus_btn.setChecked(pressed)
-                self.x_plus_btn.setStyleSheet(self.pressed_style if pressed else self.released_style)
+        elif event.type() == QEvent.KeyRelease:
+            key_map = {
+                Qt.Key_W: ('y_positive', self.y_plus_btn),
+                Qt.Key_S: ('y_negative', self.y_minus_btn),
+                Qt.Key_A: ('x_negative', self.x_minus_btn),
+                Qt.Key_D: ('x_positive', self.x_plus_btn)
+            }
+            if event.key() in key_map:
+                direction, btn = key_map[event.key()]
+                btn.setChecked(False)
+                self.stop_jog(direction, btn)
                 return True
 
         return super().eventFilter(source, event)
 
 class MediaHttpGetter:
     pass
-
 
 class GoProManager(QThread):
     frame_ready = pyqtSignal(QImage)
