@@ -17,6 +17,7 @@ from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent
 from PyQt5.QtGui import QImage, QPixmap, QIntValidator
 import platform
 import requests
+import csv
 
 # Configuration
 STREAM_PORT = 8554
@@ -112,6 +113,11 @@ class CNCPanel(QDialog):
 
         self.init_ui()
 
+        # Timer to poll Duet position
+        self.position_timer = QTimer(self)
+        self.position_timer.timeout.connect(self.poll_duet_position)
+        self.position_timer.start(800)  # ms
+
     def init_ui(self):
         layout = QVBoxLayout()
 
@@ -145,6 +151,15 @@ class CNCPanel(QDialog):
         velocity_layout.addLayout(jump_layout)
         velocity_group.setLayout(velocity_layout)
         layout.addWidget(velocity_group)
+
+        # --- Duet live position ---
+        pos_group = QGroupBox("Duet Position (M114)")
+        pos_layout = QVBoxLayout()
+        self.duet_pos_edit = QLineEdit("X: ---, Y: ---")
+        self.duet_pos_edit.setReadOnly(True)
+        pos_layout.addWidget(self.duet_pos_edit)
+        pos_group.setLayout(pos_layout)
+        layout.addWidget(pos_group)
 
         # --- D-pad section ---
         dpad_group = QGroupBox("Movement Control")
@@ -190,6 +205,10 @@ class CNCPanel(QDialog):
 
         self.setLayout(layout)
         self.installEventFilter(self)
+
+        # at the end of CNCPanel.init_ui()
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocus()
 
     # ----------------------------
     # Configuración de valores
@@ -244,9 +263,13 @@ class CNCPanel(QDialog):
 
     def get_current_position(self):
         try:
-            requests.get(f"http://{self.duet_ip}/rr_gcode?gcode=M114", timeout=2)
-            import time
-            time.sleep(0.7)
+            # Ask Duet to produce the position reply
+            requests.get(
+                f"http://{self.duet_ip}/rr_gcode",
+                params = {"gcode": "M114"},
+                timeout = 2
+            )
+            # Read the reply
             r = requests.get(f"http://{self.duet_ip}/rr_reply", timeout=2)
             raw = r.text
             print(f"Respuesta cruda: {raw}")
@@ -262,18 +285,29 @@ class CNCPanel(QDialog):
             print(f"Error obteniendo posición: {e}")
             return None, None
 
+    def poll_duet_position(self):
+        x, y = self.get_current_position()
+        if x is not None and y is not None:
+            self.duet_pos_edit.setText(f"X: {x}, Y: {y}")
+
     # ----------------------------
     # Jog continuo
     # ----------------------------
     def start_jog(self, direction, button):
         button.setStyleSheet(self.pressed_style)
         self.active_direction = direction
+        # (optional) pause polling while jogging to reduce contention
+        if self.position_timer.isActive():
+            self.position_timer.stop()
         self.jog_timer.start(self.jog_interval)  # Inicia envío periódico
 
     def stop_jog(self, direction, button):
         button.setStyleSheet(self.released_style)
         self.jog_timer.stop()
         self.active_direction = None
+        # (optional) resume polling after jogging
+        if not self.position_timer.isActive():
+            self.position_timer.start(800)
 
     def send_sequence(self, commands):
         ok = True
@@ -307,6 +341,15 @@ class CNCPanel(QDialog):
                 Qt.Key_A: ('x_negative', self.x_minus_btn),
                 Qt.Key_D: ('x_positive', self.x_plus_btn)
             }
+            # Save with keys 1..9 and 0 (=> slot 10)
+            if (Qt.Key_1 <= event.key() <= Qt.Key_9) or (event.key() == Qt.Key_0):
+                slot = (event.key() - Qt.Key_0) or 10  # maps 0 -> 10
+                x, y = self.get_current_position()
+                if x is not None and y is not None and isinstance(self.parent(), QMainWindow):
+                    self.parent().save_manual_position(slot, x, y)
+                    self.duet_pos_edit.setText(f"X: {x}, Y: {y}")
+                return True
+
             if event.key() in key_map and not self.jog_timer.isActive():
                 direction, btn = key_map[event.key()]
                 btn.setChecked(True)
@@ -635,6 +678,10 @@ class MainWindow(QMainWindow):
         # Initialize UI
         self.init_ui()
 
+        # Positions path
+        self.positions_csv_path = os.path.join(os.path.dirname(__file__), "positions.csv")
+        self.load_positions_from_csv()
+
         # Start GoPro
         self.gopro_manager.start()
 
@@ -805,6 +852,49 @@ class MainWindow(QMainWindow):
     def handle_position_update(self, position):
         self.current_position = position
         self.current_pos_table.item(0, 1).setText(f"({position[0]}, {position[1]})")
+
+    def save_manual_position(self, slot: int, x: str, y: str):
+        """
+        Save a position (from the Manual controller) into the table and persist to CSV.
+        slot: 1..9
+        """
+        row = slot - 1  # table row index
+        # Update GUI table
+        self.positions_table.item(row, 1).setText(str(x))
+        self.positions_table.item(row, 2).setText(str(y))
+        # Persist entire table to CSV
+        self.write_positions_to_csv()
+
+    def load_positions_from_csv(self):
+        if not os.path.exists(self.positions_csv_path):
+            return
+        try:
+            with open(self.positions_csv_path, "r", newline="") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            # Expect rows of [label, x, y] for 10 rows
+            for i in range(min(10, len(rows))):
+                if len(rows[i]) >= 3:
+                    self.positions_table.item(i, 0).setText(rows[i][0])
+                    self.positions_table.item(i, 1).setText(rows[i][1])
+                    self.positions_table.item(i, 2).setText(rows[i][2])
+        except Exception as e:
+            print(f"Failed to load positions CSV: {e}")
+
+    def write_positions_to_csv(self):
+        try:
+            rows = []
+            for i in range(10):
+                label = self.positions_table.item(i, 0).text() if self.positions_table.item(i,
+                                                                                            0) else f"Position {i + 1}"
+                x = self.positions_table.item(i, 1).text() if self.positions_table.item(i, 1) else "0.0"
+                y = self.positions_table.item(i, 2).text() if self.positions_table.item(i, 2) else "0.0"
+                rows.append([label, x, y])
+            with open(self.positions_csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)
+        except Exception as e:
+            print(f"Failed to write positions CSV: {e}")
 
     def update_positions_table(self, positions):
         for i in range(1, 11):
