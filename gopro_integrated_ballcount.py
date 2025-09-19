@@ -812,6 +812,7 @@ class MainWindow(QMainWindow):
         self._pos_timer.start(100)
 
         self.duet_gpIn_index = 1  # J1 -> sensors.gpIn[1]
+        self.duet_gpIn2_index = 2  # J2 -> sensors.gpIn[2] (io1.in)
         self.ball_timer = QTimer(self)
         self.ball_timer.timeout.connect(self.poll_duet_ballcount)
         self.ball_timer.start(1000)
@@ -935,7 +936,6 @@ class MainWindow(QMainWindow):
         self.ballcount_reset_btn = QPushButton("Reset")
         self.ballcount_reset_btn.clicked.connect(self.reset_ballcount)
         ball_layout.addWidget(self.ballcount_reset_btn, 0)
-        # Presence indicator
         ball_layout.addSpacing(12)
         ball_layout.addWidget(QLabel("Detected:"))
         self.presence_value = QLabel("—")
@@ -944,6 +944,17 @@ class MainWindow(QMainWindow):
         ball_layout.addWidget(self.presence_value, 0)
         ball_group.setLayout(ball_layout)
         right_panel.addWidget(ball_group)
+
+        # --- Second sensor (io1.in) ---
+        sensor2_group = QGroupBox("Second Sensor (io1.in)")
+        s2_layout = QHBoxLayout()
+        s2_layout.addWidget(QLabel("Detected 2:"))
+        self.presence2_value = QLabel("—")
+        self.presence2_value.setAlignment(Qt.AlignCenter)
+        self.presence2_value.setFixedWidth(90)
+        s2_layout.addWidget(self.presence2_value, 0)
+        sensor2_group.setLayout(s2_layout)
+        right_panel.addWidget(sensor2_group)
 
 
         # Current position group
@@ -1413,7 +1424,7 @@ class MainWindow(QMainWindow):
     
     def poll_duet_ballcount(self):
         """
-        Poll Duet via HTTP RR model to read global.ballCount, and also presence (sensors.gpIn[J].value).
+        Poll Duet via HTTP RR model to read global.ballCount, and both sensor presences.
         """
         # ballCount
         try:
@@ -1430,10 +1441,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # presence
+        # presence sensors
         self.update_presence_from_duet()
+        self.update_presence2_from_duet()
 
     def update_presence_from_duet(self):
+        """
+        Read sensors.gpIn[J1].value to know metal presence (sensor 1).
+        """
         try:
             idx = getattr(self, "duet_gpIn_index", 1)
             r = requests.get(f"http://{self.duet_ip}/rr_model",
@@ -1454,12 +1469,35 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def reset_ballcount(self):
+    def update_presence2_from_duet(self):
         """
-        Reset the Duet-side global.ballCount to 0 using rr_gcode.
+        Read sensors.gpIn[J2].value (defaults to 2) to know second sensor state (io1.in).
         """
         try:
-            # Send meta command through HTTP
+            idx = getattr(self, "duet_gpIn2_index", 2)
+            r = requests.get(f"http://{self.duet_ip}/rr_model",
+                             params={"key": f"sensors.gpIn[{idx}].value", "flags": "v"},
+                             timeout=0.6)
+            if r.status_code == 200:
+                data = r.json()
+                val = data.get("result")
+                if isinstance(val, dict) and "value" in val:
+                    val = val["value"]
+                present = False
+                try:
+                    present = bool(int(val))
+                except Exception:
+                    present = bool(val)
+                self.presence2_value.setText("Metal" if present else "No metal")
+                self.presence2_value.setStyleSheet("color: green;" if present else "color: gray;")
+        except Exception:
+            pass
+
+    def reset_ballcount(self):
+        """
+        Reset the Duet-side global.ballCount to 0 via HTTP.
+        """
+        try:
             rq = requests.get(f"http://{self.duet_ip}/rr_gcode", params={"gcode":"set global.ballCount = 0"}, timeout=0.8)
             if rq.status_code == 200:
                 self.ballcount_edit.setText("0")
