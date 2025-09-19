@@ -811,11 +811,10 @@ class MainWindow(QMainWindow):
         self._pos_timer.timeout.connect(self._drain_pos_queue)
         self._pos_timer.start(100)
 
-        # Timer to poll Duet ball counter over Ethernet
+        self.duet_gpIn_index = 1  # J1 -> sensors.gpIn[1]
         self.ball_timer = QTimer(self)
         self.ball_timer.timeout.connect(self.poll_duet_ballcount)
-        self.ball_timer.start(1000)  # ms
-
+        self.ball_timer.start(1000)
         print("[INIT] MainWindow ready.")
 
     def init_ui(self):
@@ -936,6 +935,13 @@ class MainWindow(QMainWindow):
         self.ballcount_reset_btn = QPushButton("Reset")
         self.ballcount_reset_btn.clicked.connect(self.reset_ballcount)
         ball_layout.addWidget(self.ballcount_reset_btn, 0)
+        # Presence indicator
+        ball_layout.addSpacing(12)
+        ball_layout.addWidget(QLabel("Detected:"))
+        self.presence_value = QLabel("—")
+        self.presence_value.setAlignment(Qt.AlignCenter)
+        self.presence_value.setFixedWidth(90)
+        ball_layout.addWidget(self.presence_value, 0)
         ball_group.setLayout(ball_layout)
         right_panel.addWidget(ball_group)
 
@@ -1404,51 +1410,62 @@ class MainWindow(QMainWindow):
 
         self.update_status("▶ Test iniciado: 0↔C0..C9")
 
+    
     def poll_duet_ballcount(self):
         """
-        Poll Duet via HTTP RR model to read global.ballCount and update the textbox.
-        Tries rr_model with flags=v first; falls back gracefully.
+        Poll Duet via HTTP RR model to read global.ballCount, and also presence (sensors.gpIn[J].value).
         """
+        # ballCount
         try:
-            # Prefer compact value-only with flags=v
             r = requests.get(f"http://{self.duet_ip}/rr_model", params={"key":"global.ballCount", "flags":"v"}, timeout=0.6)
             if r.status_code == 200:
                 data = r.json()
                 res = data.get("result")
-                # Handle both {"result":{"ballCount":N}} and {"result":N}
                 if isinstance(res, dict) and "ballCount" in res:
                     val = res["ballCount"]
                 else:
                     val = res
                 if isinstance(val, (int, float, str)):
                     self.ballcount_edit.setText(str(val))
-                    return
-            # Fallback attempt without flags
-            r2 = requests.get(f"http://{self.duet_ip}/rr_model", params={"key":"global.ballCount"}, timeout=0.6)
-            if r2.status_code == 200:
-                d2 = r2.json()
-                res2 = d2.get("result", {})
-                if isinstance(res2, dict):
-                    val2 = res2.get("ballCount", None)
-                else:
-                    val2 = res2
-                if val2 is not None:
-                    self.ballcount_edit.setText(str(val2))
-        except Exception as e:
-            # Keep last good value; optionally you could show a transient status
+        except Exception:
+            pass
+
+        # presence
+        self.update_presence_from_duet()
+
+    def update_presence_from_duet(self):
+        try:
+            idx = getattr(self, "duet_gpIn_index", 1)
+            r = requests.get(f"http://{self.duet_ip}/rr_model",
+                             params={"key": f"sensors.gpIn[{idx}].value", "flags": "v"},
+                             timeout=0.6)
+            if r.status_code == 200:
+                data = r.json()
+                val = data.get("result")
+                if isinstance(val, dict) and "value" in val:
+                    val = val["value"]
+                present = False
+                try:
+                    present = bool(int(val))
+                except Exception:
+                    present = bool(val)
+                self.presence_value.setText("Metal" if present else "No metal")
+                self.presence_value.setStyleSheet("color: green;" if present else "color: gray;")
+        except Exception:
             pass
 
     def reset_ballcount(self):
         """
-        Reset the Duet-side global.ballCount to 0 using a meta command.
+        Reset the Duet-side global.ballCount to 0 using rr_gcode.
         """
-        ok, reply, data = self._duet_send("set global.ballCount = 0", read_reply=True, timeout=2.0)
-        if ok:
-            self.ballcount_edit.setText("0")
-        else:
-            QMessageBox.warning(self, "Duet", f"Failed to reset ball counter.\nReply: {reply}\nData: {data}")
-
-    def update_hsv_thresholds(self):
+        try:
+            # Send meta command through HTTP
+            rq = requests.get(f"http://{self.duet_ip}/rr_gcode", params={"gcode":"set global.ballCount = 0"}, timeout=0.8)
+            if rq.status_code == 200:
+                self.ballcount_edit.setText("0")
+        except Exception:
+            pass
+def update_hsv_thresholds(self):
         hsv_values = [s.value() for s in self.sliders]
         self.gopro_manager.update_hsv_values(hsv_values)
 
