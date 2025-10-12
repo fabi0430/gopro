@@ -1,0 +1,83 @@
+M552 P192.168.185.2 S1
+
+; === Arranque seguro para comisionar 1HCL en OPEN-LOOP ===
+G4 S2                            ; 1) espera a que arranquen las HCL
+
+M669 K0                          ; cartesiano
+
+; 2) HCL closed loop
+;M569.1 P50.0 T3 E2.0:1.0 R100; Configure the Duet 3 Expansion 1HCL board at CAN address 50 with a Duet 3 magnetic encoder, warn if 1 fullstep threshold exceeded, error if 2 full steps threshold exceeded.
+M569 P50.0 D0 S0 ; Configure the motor on the Duet 3 Expansion 1HCL controller at can address 50 as being in closed-loop drive mode (D4) and not reversed (S1)
+
+;M569.1 P51.0 T3 E2.0:1.0 R100
+M569 P51.0 D0 S0
+
+;M569.1 P52.0 T3 E2.0:1.0 R100
+M569 P52.0 D0 S0
+
+; 3) Map axys
+M584 X52.0 Y50.0:51.0
+
+; 4) Microstepping, steps/mm, currents
+M350 X16 Y16 I1
+M92  X320 Y320
+M906 X1000 Y1000 I30
+M913 X100 Y100
+
+; 5) Limits and allow movement withouth homing
+M208 X0 Y0 S1
+M208 X999 Y999 S0
+M564 H0 S0
+
+; 6) Endstops
+M574 X2 S1 P"!52.io0.in"
+M574 Y2 S1 P"!50.io0.in"
+
+; 7) Motors speeds (mm/min)
+M566 X900 Y900                 ; 15 mm/s
+M203 X6000 Y6000               ; 100 mm/s
+M201 X500 Y500
+
+; 8) Digital outputs from the Duet
+M950 P3 C"out3" Q500           ; define GPIO device P3 on out3
+M950 P4 C"out4" Q500           ; define GPIO device P4 on out4
+M950 P5 C"out5" Q500           ; define GPIO device P5 on out5
+M950 P10 C"0.io0.out"          ; define GPIO device P10 on digital output 0
+
+; 9) 5V PWM servo on OUT6 (buffered) ---
+M950 S0 C"out6" Q50          ; create servo #0 on out6 at 50 Hz (RC servo standard)
+; (optional) park to center on boot:
+; M280 P0 S1500               ; 1500 µs ≈ center
+
+; === Magnetic ball counter (PNP NO on IO_5.in) ===
+
+; PNP NO -> active HIGH when metal present -> use non-inverted io5.in
+M950 J1 C"0.io6.in"                    ; J1 is our GPI on IO_6.in
+M581 P1 T3 R0                         ; J1 -> trigger2.g on rising edge
+
+M950 J2 C"0.io1.in"
+
+; 2.2 Create (or reset) global counter variable at boot
+if !exists(global.ballCount)
+  global ballCount = 0
+
+if !exists(global.lastHit)
+  global lastHit = 0
+
+if !exists(global.ballInChamber)
+  global ballInChamber=0
+
+; Driver 0 as ON/OFF motor (extrusor ficticio)
+M569 P0 S1
+M584 X52.0 Y50.0:51.0 E0
+M350 E16 I1
+M92  E320
+M906 E1400 I30
+M302 P1
+
+M563 P0 D0 S"StepperOnOff"
+T0
+
+M208 X0 Y0 E-999999 S1
+M208 E999999 S0
+M564 H0 S0
