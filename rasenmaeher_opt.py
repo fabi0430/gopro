@@ -677,6 +677,7 @@ class GoProManager(QThread):
         self.show_filters = False
         self.loop = None
         self.stream_url = None
+        self.retry_limit = 1
 
     async def initialize(self):
         try:
@@ -782,14 +783,22 @@ class GoProManager(QThread):
     def run(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._run())
+        self.loop.run_until_complete(self._run_with_retries())
 
-    async def _run(self):
-        if not await self.initialize():
-            return
-        while self._run_flag:
+    async def _run_with_retries(self):
+        tries = int(getattr(self, 'retry_limit', 1) or 1)
+        attempt = 0
+        while self._run_flag and attempt < tries:
+            attempt += 1
             try:
+                ok = await self.initialize()
+                if not ok:
+                    self.status_update.emit(f"⚠️ Connection attempt {attempt}/{tries} failed")
+                    if attempt < tries:
+                        await asyncio.sleep(2)
+                    continue
                 await self.start_stream()
+                # Process frames until stream ends or stop requested
                 while self._run_flag and self.cap and self.cap.isOpened():
                     ret, frame = self.cap.read()
                     if not ret:
@@ -811,24 +820,34 @@ class GoProManager(QThread):
                         cv2.imshow("Red Mask", red_mask)
                         cv2.imshow("Cleaned Mask", cleaned_mask)
                         cv2.waitKey(1)
-                else:
-                    break
+                # Clean up after stream ends
                 if self.show_filters:
                     cv2.destroyWindow("Red Mask")
                     cv2.destroyWindow("Cleaned Mask")
                 if self.cap:
                     self.cap.release()
                 if self.gopro:
-                    await self.gopro.streaming.stop_active_stream()
+                    try:
+                        await self.gopro.streaming.stop_active_stream()
+                    except Exception:
+                        pass
+                # If we reach here without stop flag, consider it a failed attempt and let loop retry
                 if not self._run_flag:
                     break
-                self.status_update.emit(f"🔄 Reconnecting in {RECONNECT_DELAY} seconds...")
-                await asyncio.sleep(RECONNECT_DELAY)
+                self.status_update.emit(f"⚠️ Stream ended (attempt {attempt}/{tries})")
             except Exception as e:
-                self.status_update.emit(f"⚠️ Stream error: {str(e)}")
-                await asyncio.sleep(RECONNECT_DELAY)
+                self.status_update.emit(f"⚠️ GoPro run error (attempt {attempt}/{tries}): {e}")
+            if attempt < tries and self._run_flag:
+                self.status_update.emit("🔄 Retrying in 2s...")
+                await asyncio.sleep(2)
+        # Out of tries
+        if attempt >= tries:
+            self.status_update.emit("⛔ Could not connect to GoPro after retries.")
         if self.gopro:
-            await self.gopro.close()
+            try:
+                await self.gopro.close()
+            except Exception:
+                pass
 
     def process_frame(self, frame):
         x_start, x_end = 480, 1440
@@ -1819,8 +1838,7 @@ class MainWindow(QMainWindow):
         self.gopro_manager.position_update.connect(self.handle_position_update)
         self.gopro_manager.recording_changed.connect(self.update_recording_label)
 
-        self.gopro_manager.start()  # 3) arrancar hilo (crea su propio event loop)
-
+        
         # Current position tracking
         self.local_ball_count = 0  # local counter increments on each completed shot
         self.current_position = None
@@ -1944,7 +1962,7 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("System Status")
         status_layout = QVBoxLayout()
 
-        self.status_label = QLabel("Connecting to GoPro...")
+        self.status_label = QLabel("GoPro: idle (not connected)")
         self.status_label.setStyleSheet("font-size: 14px;")
 
         self.ref_pos_label = QLabel("Reference position: Not set")
@@ -1959,7 +1977,11 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.ref_pos_label)
         status_layout.addWidget(self.recording_label)
-        status_layout.addWidget(self.server_status_label)
+        
+        self.connect_gopro_btn = QPushButton("Connect GoPro")
+        self.connect_gopro_btn.clicked.connect(self.connect_gopro)
+        status_layout.addWidget(self.connect_gopro_btn)
+status_layout.addWidget(self.server_status_label)
         status_group.setLayout(status_layout)
         right_panel.addWidget(status_group)
         # --- Ball counter (Duet) ---
@@ -2024,6 +2046,28 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(main_widget)
 
+    
+    def connect_gopro(self):
+        """Start GoPro connection routine with up to 3 attempts. Creates a fresh manager if needed."""
+        try:
+            # If a previous thread exists and is running, do nothing
+            if hasattr(self, "gopro_manager") and self.gopro_manager is not None and self.gopro_manager.isRunning():
+                QMessageBox.information(self, "GoPro", "GoPro connection is already running.")
+                return
+        except Exception:
+            pass
+        # (Re)create manager instance and wire signals
+        try:
+            self.gopro_manager = GoProManager()
+            self.gopro_manager.frame_ready.connect(self.update_gopro_image)
+            self.gopro_manager.status_update.connect(self.update_status)
+            self.gopro_manager.position_update.connect(self.handle_position_update)
+            self.gopro_manager.recording_changed.connect(self.update_recording_label)
+            self.gopro_manager.retry_limit = 3
+            self.update_status("🔌 Starting GoPro connection (up to 3 tries)...")
+            self.gopro_manager.start()
+        except Exception as e:
+            QMessageBox.critical(self, "GoPro", f"Failed to start GoPro thread:\n{e}")
     def update_recording_label(self, is_recording):
         if is_recording:
             self.recording_label.setText("Recording: 🔴 Recording")
