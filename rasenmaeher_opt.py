@@ -2675,6 +2675,7 @@ class MainWindow(QMainWindow):
                          f"G1 X{xk:.3f} Y{yk:.3f} F3000", "M400"]
                 # 3) start recording, 4) wait 1s
                 cmds += ["::CAM_START", "::SLEEP 1"]
+                self.msleep(10000)
                 # 5–7) structural cycle until temp_count == per_point
                 cmds += [f"::STRUCT_CYCLE_B N={per_point}"]
                 # 8) temp resets internally; 9) stop recording
