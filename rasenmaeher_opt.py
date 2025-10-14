@@ -678,6 +678,8 @@ class GoProManager(QThread):
         self.loop = None
         self.stream_url = None
         self.retry_limit = 1
+        self.detect_enabled = True
+        self._frame_counter = 0
 
     async def initialize(self):
         try:
@@ -803,6 +805,9 @@ class GoProManager(QThread):
                     ret, frame = self.cap.read()
                     if not ret:
                         break
+                    self._frame_counter = (self._frame_counter + 1) % max(1, int(getattr(self, 'frame_skip', 1)))
+                    if self._frame_counter != 0:
+                        continue
                     # Throttle UI FPS
                     import time as _time
                     now = _time.time()
@@ -850,6 +855,17 @@ class GoProManager(QThread):
                 pass
 
     def process_frame(self, frame):
+        # Fast path: if detection disabled, just resize for display and return empty masks
+        if not getattr(self, 'detect_enabled', True):
+            view = frame
+            try:
+                # cheap resize to half height for UI
+                h, w = frame.shape[:2]
+                view = cv2.resize(frame, (w//2*2, h//2*2), interpolation=cv2.INTER_AREA)
+            except Exception:
+                view = frame
+            dummy = (np.zeros((1,1), dtype=np.uint8), np.zeros((1,1), dtype=np.uint8))
+            return view, dummy
         x_start, x_end = 480, 1440
         y_start, y_end = 270, 810
         roi = frame[y_start:y_end, x_start:x_end]
@@ -944,6 +960,12 @@ class Preferences:
             "nails": {
                 "spindle_velocity": 1200
             },
+            "video": {
+                "emit_fps": 10,
+                "process_scale": 0.5,
+                "frame_skip": 1,
+                "detect_enabled": True
+            },
             "calibration_dir": {
                 "dir_x": 1,
                 "dir_y": 1
@@ -1017,6 +1039,10 @@ class EditPreferencesDialog(QDialog):
             ("Deposit position (S)", "servo_positions.deposit"),
             ("Calibration dir X (+1/-1)", "calibration_dir.dir_x"),
             ("Calibration dir Y (+1/-1)", "calibration_dir.dir_y"),
+            ("Video emit FPS", "video.emit_fps"),
+            ("Video process scale (0.2–1.0)", "video.process_scale"),
+            ("Video frame skip (int)", "video.frame_skip"),
+            ("Detection enabled (True/False)", "video.detect_enabled"),
         ]
 
         self.inputs = []
@@ -1051,10 +1077,17 @@ class EditPreferencesDialog(QDialog):
                 self.prefs.set(key, lst)
             elif key.endswith(("_step", "_F")):
                 self.prefs.set(key, float(raw))
-            elif key.endswith(("pixel_tolerance", "max_iters", "output_pin", "toggle_on_S", "toggle_off_S", "channel", "s_low", "s_high", "dwell_seconds", "struct_per_point", "throw_per_point", "throw_big_iters", "collect", "deposit", "dir_x", "dir_y")):
+            elif key.endswith(("pixel_tolerance", "max_iters", "output_pin", "toggle_on_S", "toggle_off_S", "channel", "s_low", "s_high", "dwell_seconds", "struct_per_point", "throw_per_point", "throw_big_iters", "collect", "deposit", "dir_x", "dir_y", "emit_fps", "frame_skip")):
                 self.prefs.set(key, int(float(raw)))
             else:
-                self.prefs.set(key, raw)
+                # Added bool/float handling for video keys
+                if key.endswith(("process_scale",)):
+                    self.prefs.set(key, float(raw))
+                elif key.endswith(("detect_enabled",)):
+                    val = raw.strip().lower()
+                    self.prefs.set(key, val in ("1","true","yes","y","on"))
+                else:
+                    self.prefs.set(key, raw)
             QMessageBox.information(self, "Saved", f"{key} updated.")
         except Exception as e:
             QMessageBox.warning(self, "Invalid value", f"Could not parse value for {key}:\n{e}")
@@ -1862,13 +1895,13 @@ class MainWindow(QMainWindow):
 
         self._pos_timer = QTimer(self)
         self._pos_timer.timeout.connect(self._drain_pos_queue)
-        self._pos_timer.start(200)
+        self._pos_timer.start(300)
 
         self.duet_gpIn_index = 1  # J1 -> sensors.gpIn[1]
         self.duet_gpIn2_index = 2  # J2 -> sensors.gpIn[2] (io1.in)
         self.ball_timer = QTimer(self)
         self.ball_timer.timeout.connect(self.poll_duet_ballcount)
-        self.ball_timer.start(1200)
+        self.ball_timer.start(1500)
         print("[INIT] MainWindow ready.")
 
     def init_ui(self):
@@ -2065,9 +2098,20 @@ class MainWindow(QMainWindow):
             self.gopro_manager.recording_changed.connect(self.update_recording_label)
             self.gopro_manager.retry_limit = 3
             self.update_status("🔌 Starting GoPro connection (up to 3 tries)...")
+            self._apply_video_prefs_to_gopro()
             self.gopro_manager.start()
         except Exception as e:
             QMessageBox.critical(self, "GoPro", f"Failed to start GoPro thread:\n{e}")
+    def _apply_video_prefs_to_gopro(self):
+        try:
+            vm = self.gopro_manager
+            vm.emit_fps = int(self.prefs.get("video.emit_fps", vm.emit_fps))
+            vm.process_scale = float(self.prefs.get("video.process_scale", vm.process_scale))
+            vm.frame_skip = int(self.prefs.get("video.frame_skip", vm.frame_skip))
+            vm.detect_enabled = bool(self.prefs.get("video.detect_enabled", True))
+        except Exception:
+            pass
+    
     def update_recording_label(self, is_recording):
         if is_recording:
             self.recording_label.setText("Recording: 🔴 Recording")
@@ -2077,7 +2121,14 @@ class MainWindow(QMainWindow):
             self.recording_label.setStyleSheet("font-size: 14px; color: green;")
 
     def update_gopro_image(self, qt_image):
-        self.gopro_label.setPixmap(QPixmap.fromImage(qt_image))
+        # avoid redundant repaints
+        pm = self.gopro_label.pixmap()
+        new_pm = QPixmap.fromImage(qt_image)
+        if pm is None or pm.size() != new_pm.size():
+            self.gopro_label.setPixmap(new_pm)
+        else:
+            # paint in place to avoid realloc; still set to ensure refresh
+            self.gopro_label.setPixmap(new_pm)
 
     def update_status(self, message):
         self.status_label.setText(message)
