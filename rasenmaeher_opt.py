@@ -1701,15 +1701,16 @@ class CommandRunner(QThread):
 
         # 5) If ball already in chamber -> one shot
         if self._read_sensor_ball():
+            # Fire valve and increment local ball counter
             main._duet_send(f"M42 P{pin} S1", read_reply=True)
+            temp += 1
             try:
-                main._on_shot_completed()
+                main._on_shot_completed()  # increment local counter and refresh UI
             except Exception:
                 pass
             self.msleep(500)
             main._duet_send(f"M42 P{pin} S0", read_reply=True)
             self.msleep(500)
-            temp += 1
 
         # 6) Wait
         self.msleep(500)
@@ -1719,6 +1720,16 @@ class CommandRunner(QThread):
             # 7.1) While no ball present -> load attempts
             while not self._read_sensor_ball() and not self._cancel:
                 main._duet_send("M400 M83 G1 E20 F600", read_reply=True); self.msleep(2000)
+                main._duet_send(f" M280 P{servoP} S{S_collect}", read_reply=True); self.msleep(1000)
+                main._duet_send(f" M280 P{servoP} S{S_deposit}", read_reply=True);
+                waited = 0
+                while waited < 500 and not self._cancel:
+                    if self._read_sensor_ball(): break
+                    self.msleep(50); waited += 50
+
+            # 7.2) While ball present -> shoot and increment
+            self.msleep(100)
+            while self._read_sensor_ball() and temp < target and not self._cancel:
                 # Fire valve and increment local ball counter
                 main._duet_send(f"M42 P{pin} S1", read_reply=True)
                 temp += 1
@@ -1730,16 +1741,6 @@ class CommandRunner(QThread):
                 main._duet_send(f"M42 P{pin} S0", read_reply=True)
                 self.msleep(500)
 
-                waited = 0
-                while waited < 200 and not self._cancel:
-                    if self._read_sensor_ball(): break
-                    self.msleep(50); waited += 50
-
-            # 7.2) While ball present -> shoot and increment
-            self.msleep(100)
-            while self._read_sensor_ball() and temp < target and not self._cancel:
-                main._duet_send(f"M42 P{pin} S1", read_reply=True); temp += 1; self.msleep(500)
-                main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(500)
                 # Confirm chamber clear
                 waited = 0
                 while waited < 900 and not self._cancel:
