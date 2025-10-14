@@ -1720,7 +1720,7 @@ class CommandRunner(QThread):
             # 7.1) While no ball present -> load attempts
             while not self._read_sensor_ball() and not self._cancel:
                 main._duet_send("M400 M83 G1 E20 F600", read_reply=True); self.msleep(2000)
-                main._duet_send(f" M280 P{servoP} S{S_collect}", read_reply=True); self.msleep(1000)
+                main._duet_send(f" M280 P{servoP} S{S_collect}", read_reply=True); self.msleep(2000)
                 main._duet_send(f" M280 P{servoP} S{S_deposit}", read_reply=True);
                 waited = 0
                 while waited < 500 and not self._cancel:
