@@ -1981,7 +1981,7 @@ class MainWindow(QMainWindow):
         self.connect_gopro_btn = QPushButton("Connect GoPro")
         self.connect_gopro_btn.clicked.connect(self.connect_gopro)
         status_layout.addWidget(self.connect_gopro_btn)
-status_layout.addWidget(self.server_status_label)
+        status_layout.addWidget(self.server_status_label)
         status_group.setLayout(status_layout)
         right_panel.addWidget(status_group)
         # --- Ball counter (Duet) ---
