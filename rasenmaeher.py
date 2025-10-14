@@ -45,12 +45,14 @@ class TestTypeDialog(QDialog):
         v.addWidget(lbl)
 
         btn_row = QHBoxLayout()
-        self.btn_steel_balls = QPushButton("Structural integrity")
-        self.btn_nails = QPushButton("Throwing objects")
-        self.btn_steel_rod = QPushButton("Impact test")
-        btn_row.addWidget(self.btn_steel_balls)
-        btn_row.addWidget(self.btn_nails)
-        btn_row.addWidget(self.btn_steel_rod)
+        self.btn_structural_integrity_b = QPushButton("Structural integrity (Steel balls)")
+        self.btn_structural_integrity_n = QPushButton("Structural integrity (Nails)")
+        self.btn_throwing_objects = QPushButton("Throwing objects")
+        self.btn_impact_test = QPushButton("Impact test")
+        btn_row.addWidget(self.btn_structural_integrity_b)
+        btn_row.addWidget(self.btn_structural_integrity_n)
+        btn_row.addWidget(self.btn_throwing_objects)
+        btn_row.addWidget(self.btn_impact_test)
         v.addLayout(btn_row)
 
         h = QHBoxLayout()
@@ -61,9 +63,10 @@ class TestTypeDialog(QDialog):
 
         self.choice = None
         self.btn_cancel.clicked.connect(self.reject)
-        self.btn_steel_balls.clicked.connect(lambda: self._choose("steel_balls"))
-        self.btn_nails.clicked.connect(lambda: self._choose("nails"))
-        self.btn_steel_rod.clicked.connect(lambda: self._choose("steel_rod"))
+        self.btn_structural_integrity_b.clicked.connect(lambda: self._choose("structural_integrity_b"))
+        self.btn_structural_integrity_n.clicked.connect(lambda: self._choose("structural_integrity_n"))
+        self.btn_throwing_objects.clicked.connect(lambda: self._choose("throwing_objects"))
+        self.btn_impact_test.clicked.connect(lambda: self._choose("impact_test"))
 
     def _choose(self, val: str):
         self.choice = val
@@ -72,18 +75,18 @@ class TestTypeDialog(QDialog):
 
 # --- Plano 2D con imagen + puntos ---
 class PointsCanvas(QWidget):
-    hovered_index_changed = pyqtSignal(int)          # para posibles hooks futuros
-    request_assign_index = pyqtSignal(int, int)      # (idx del punto, nuevo índice asignado)
-    request_erase_point = pyqtSignal(int)            # idx del punto en lista
+    hovered_index_changed = pyqtSignal(int)          # For possile future hooks
+    request_assign_index = pyqtSignal(int, int)      # (idx of point, new assigned index)
+    request_erase_point = pyqtSignal(int)            # idx of point in list
     request_goto_point = pyqtSignal(float, float)
 
     def __init__(self, parent=None, mm_size=(1000.0, 1000.0), image_name="Test plate.png"):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.mm_w, self.mm_h = mm_size
-        # lista de puntos: [{'x': float, 'y': float, 'idx': Optional[int]}]
+        # Points list: [{'x': float, 'y': float, 'idx': Optional[int]}]
         self.points = []
-        # carga imagen
+        # Loads image for canvas
         self.img = QPixmap(os.path.join(os.path.dirname(__file__), image_name))
         if self.img.isNull():
             alt = "/mnt/data/Test plate.png"
@@ -889,11 +892,14 @@ class Preferences:
                 "block_repeats": 10,
                 "struct_per_point": 10,
                 "throw_per_point": 10,
-                "throw_big_iters": 5
+                "throw_big_iters": 2
             },
             "servo_positions": {
                 "collect": 0,
                 "deposit": 3000
+            },
+            "nails": {
+                "spindle_velocity": 1200
             },
             "calibration_dir": {
                 "dir_x": 1,
@@ -963,6 +969,7 @@ class EditPreferencesDialog(QDialog):
             ("Struct. per point", "test.struct_per_point"),
             ("Throw per point", "test.throw_per_point"),
             ("Throw big iterations", "test.throw_big_iters"),
+            ("Nails spindle velocity (F for E)", "nails.spindle_velocity"),
             ("Collect position (S)", "servo_positions.collect"),
             ("Deposit position (S)", "servo_positions.deposit"),
             ("Calibration dir X (+1/-1)", "calibration_dir.dir_x"),
@@ -1274,6 +1281,16 @@ class TestRunnerDialog(QDialog):
         self.interim_group.setLayout(ig)
         v.addWidget(self.interim_group)
 
+        # Nails group
+        self.nails_group = QGroupBox("Nails control")
+        self.nails_group.setVisible(False)
+        ng = QHBoxLayout()
+        self.shoot_nails_btn = QPushButton("Shoot nails")
+        self.shoot_nails_btn.setEnabled(False)
+        ng.addWidget(self.shoot_nails_btn)
+        self.nails_group.setLayout(ng)
+        v.addWidget(self.nails_group)
+
         # Next commands
         next_group = QGroupBox("Next commands (look-ahead 10)")
         next_layout = QVBoxLayout()
@@ -1318,6 +1335,8 @@ class TestRunnerDialog(QDialog):
         self.retract_btn.clicked.connect(lambda: setattr(self, "_retract_clicked", True))
         self.interim_done_btn.clicked.connect(lambda: setattr(self, "_interim_done", True))
         self.interim_cancel_btn.clicked.connect(lambda: setattr(self, "_interim_cancel", True))
+        self._shoot_nails_clicked = False
+        self.shoot_nails_btn.clicked.connect(lambda: setattr(self, "_shoot_nails_clicked", True))
 
         self.total_commands = total_commands
 
@@ -1332,6 +1351,13 @@ class TestRunnerDialog(QDialog):
 
     def enable_retract(self, enabled=True):
         self.retract_btn.setEnabled(enabled)
+
+    def show_nails_controls(self, visible=True):
+        self.nails_group.setVisible(visible)
+        self.shoot_nails_btn.setEnabled(False)
+
+    def enable_shoot_nails(self, enabled=True):
+        self.shoot_nails_btn.setEnabled(enabled)
 
     def show_interim_prompt(self, visible=True):
         self.interim_group.setVisible(visible)
@@ -1406,6 +1432,11 @@ class CommandRunner(QThread):
             return (tx, ty)
         return None
 
+    def _gui(self, fn):
+        """Schedule a GUI call on the main thread."""
+        if self.dialog:
+            QTimer.singleShot(0, fn)
+
     def _wait_until_position(self, target, tol=0.05, max_ms=10000):
         if not target:
             return True
@@ -1472,7 +1503,7 @@ class CommandRunner(QThread):
                 return True
 
             # Structural cycle (sensor-driven). Format: ::STRUCT_CYCLE N=<int>
-            if token.startswith('STRUCT_CYCLE'):
+            if token.startswith('STRUCT_CYCLE_B'):
                 target = 10
                 try:
                     import re as _re
@@ -1480,7 +1511,24 @@ class CommandRunner(QThread):
                     if m: target = int(m.group(1))
                 except Exception:
                     pass
-                self._structural_cycle(target)
+                self._structural_cycle_b(target)
+                try:
+                    self.main._duet_send("G90", read_reply=True)
+                    self.main._duet_send("M400", read_reply=True)
+                except Exception:
+                    pass
+                return True
+
+            if token.startswith('STRUCT_CYCLE_N'):
+                target = 20
+                try:
+                    import re as _re
+                    m = _re.search(r"N=(\d+)", token)
+                    if m: target = int(m.group(1))
+                except Exception:
+                    pass
+                self._structural_cycle_n(target)
+                self._structural_cycle_n(target)
                 try:
                     self.main._duet_send("G90", read_reply=True)
                     self.main._duet_send("M400", read_reply=True)
@@ -1515,6 +1563,28 @@ class CommandRunner(QThread):
                 return True
 
             # Interim prompt (Throwing objects)
+            if token == 'BTN_SHOW_NAILS':
+                if self.dialog:
+                    self.dialog.show_nails_controls(True)
+                return True
+            if token == 'BTN_ENABLE_SHOOT_NAILS':
+                if self.dialog:
+                    self.dialog.enable_shoot_nails(True)
+                return True
+            if token == 'WAIT_BTN_SHOOT_NAILS':
+                if self.dialog:
+                    # wait for operator press
+                    while not getattr(self.dialog, '_shoot_nails_clicked', False) and not self._cancel:
+                        if self._paused.is_set():
+                            self.msleep(100); continue
+                        self.msleep(80)
+                    # reset flag so next shot waits again
+                    try:
+                        setattr(self.dialog, '_shoot_nails_clicked', False)
+                    except Exception:
+                        pass
+                return True
+
             if token == 'INTERIM_PROMPT_SHOW':
                 if self.dialog:
                     self.dialog.show_interim_prompt(True)
@@ -1539,7 +1609,7 @@ class CommandRunner(QThread):
         except Exception:
             return False
 
-    def _structural_cycle(self, target: int):
+    def _structural_cycle_b(self, target: int):
         """Implements the PDF's loading/shooting loops until 'target' shots."""
         main = self.main
         pin = main.prefs.get("duet.output_pin", 3)
@@ -1551,37 +1621,102 @@ class CommandRunner(QThread):
 
         # 5) If ball already in chamber -> one shot
         if self._read_sensor_ball():
-            main._duet_send(f"M42 P{pin} S1", read_reply=True); self.msleep(1000)
-            main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(1000)
+            main._duet_send(f"M42 P{pin} S1", read_reply=True); self.msleep(500)
+            main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(500)
             temp += 1
 
-        # 6) Wait 1s
-        self.msleep(1000)
+        # 6) Wait
+        self.msleep(500)
 
         # 7) While temp < target:
         while temp < target and not self._cancel:
             # 7.1) While no ball present -> load attempts
             while not self._read_sensor_ball() and not self._cancel:
-                main._duet_send("G91", read_reply=True)
-                main._duet_send("G1 E100", read_reply=True)
-                main._duet_send("G92 E0", read_reply=True)
-                main._duet_send("G90", read_reply=True)
-                main._duet_send(f"M280 P{servoP} S{S_collect}", read_reply=True); self.msleep(dwell*1000)
-                main._duet_send(f"M280 P{servoP} S{S_deposit}", read_reply=True); self.msleep(dwell*1000)
+                main._duet_send("M400 M83 G1 E20 F600", read_reply=True); self.msleep(2000)
+                main._duet_send(f" M280 P{servoP} S{S_collect}", read_reply=True); self.msleep(1000)
+                main._duet_send(f" M280 P{servoP} S{S_deposit}", read_reply=True);
                 waited = 0
-                while waited < 3000 and not self._cancel:
+                while waited < 200 and not self._cancel:
                     if self._read_sensor_ball(): break
-                    self.msleep(100); waited += 100
+                    self.msleep(50); waited += 50
 
             # 7.2) While ball present -> shoot and increment
+            self.msleep(100)
             while self._read_sensor_ball() and temp < target and not self._cancel:
-                main._duet_send(f"M42 P{pin} S1", read_reply=True); temp += 1; self.msleep(1000)
-                main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(1000)
+                main._duet_send(f"M42 P{pin} S1", read_reply=True); temp += 1; self.msleep(500)
+                main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(500)
                 # Confirm chamber clear
                 waited = 0
-                while waited < 2000 and not self._cancel:
+                while waited < 900 and not self._cancel:
                     if not self._read_sensor_ball(): break
-                    self.msleep(100); waited += 100
+                    self.msleep(50); waited += 50
+
+    def _structural_cycle_n(self, target: int):
+        """
+        Nails routine:
+          - Operator presses 'Shoot nails' -> button disables -> spindle spins -> valve fires -> reset
+          - Wait again for operator -> repeat
+          - Each shot counts as 10; e.g., target=20 => 2 shots in total.
+        """
+        main = self.main
+        pin = int(main.prefs.get("duet.output_pin", 3))
+        spindle_F = int(main.prefs.get("nails.spindle_velocity", 1200))  # F for E axis
+
+        SHOT_WEIGHT = 10  # one operator-triggered shot equals 10 "units"
+
+        # Show nails controls
+        if self.dialog:
+            self.dialog.show_nails_controls(True)
+        self.msleep(300)
+
+        shots_progress = 0
+        while shots_progress <= target and not self._cancel:
+            # --- Wait for operator ---
+            if self.dialog:
+                self.dialog.enable_shoot_nails(True)
+            # block until click (or pause/cancel)
+            while self.dialog and not getattr(self.dialog, "_shoot_nails_clicked", False) and not self._cancel:
+                if self._paused.is_set():
+                    self.msleep(100)
+                    continue
+                self.msleep(50)
+            if self._cancel:
+                break
+
+            # Disable button immediately to avoid double-trigger
+            if self.dialog:
+                self.dialog.enable_shoot_nails(False)
+                try:
+                    setattr(self.dialog, "_shoot_nails_clicked", False)
+                except Exception:
+                    pass
+
+            # --- Do one shot ---
+            # (1) Spin spindle using E-axis at configured feed
+            main._duet_send("M83", read_reply=True)  # relative extrusion mode
+            main._duet_send("G91", read_reply=True)  # relative positioning
+            main._duet_send(f"G1 E200 F{spindle_F}", read_reply=True)  # start rotation (short runup)
+            main._duet_send("G90", read_reply=True)  # back to absolute to protect XY moves
+
+            # (2) Fire valve
+            main._duet_send(f"M42 P{pin} S1", read_reply=True)
+            self.msleep(3000)  # pulse / dwell time (ms)
+            main._duet_send(f"M42 P{pin} S0", read_reply=True)
+
+            # (3) Reset extruder distance (keeps future E moves sane)
+            main._duet_send("G92 E0", read_reply=True)
+
+            # Count this shot
+            shots_progress += SHOT_WEIGHT
+
+        # Safety: ensure absolute mode before returning to XY motion
+        try:
+            main._duet_send("G90", read_reply=True)
+            main._duet_send("M400", read_reply=True)
+        except Exception:
+            pass
+
+        return not self._cancel
 
     def run(self):
         total = len(self.commands)
@@ -1643,7 +1778,7 @@ class MainWindow(QMainWindow):
         self.prefs_path = os.path.join(os.path.dirname(__file__), "preferences.json")
         self.prefs = Preferences(self.prefs_path)
         self.jog_steps_for_panel = self.prefs.get("manual.jog_steps", [0.01,0.1,1,10,100])
-        self.setWindowTitle("Integrated Monitoring System")
+        self.setWindowTitle("Integrated Monitoring System for DEKRA Test Center Dresden by Fabian Romero")
         self.setGeometry(100, 100, 1400, 800)
         print("[INIT] MainWindow starting...")
         self.duet_ip = "192.168.185.2"  # ajusta si tu IP es otra
@@ -2351,7 +2486,7 @@ class MainWindow(QMainWindow):
         runner.start()
         dlg.exec_()
 
-    def start_structural_integrity(self):
+    def start_structural_integrity_b(self):
         try:
             # Gather geometry
             center = None
@@ -2391,7 +2526,57 @@ class MainWindow(QMainWindow):
                 # 3) start recording, 4) wait 1s
                 cmds += ["::CAM_START", "::SLEEP 1"]
                 # 5–7) structural cycle until temp_count == per_point
-                cmds += [f"::STRUCT_CYCLE N={per_point}"]
+                cmds += [f"::STRUCT_CYCLE_B N={per_point}"]
+                # 8) temp resets internally; 9) stop recording
+                cmds += ["::CAM_STOP"]
+
+            # 4) Back to point 0, completed
+            cmds += ["G90", f"G1 X{cx:.3f} Y{cy:.3f} F3000", "M400"]
+            self._run_commands_with_monitor(cmds, "Structural integrity")
+        except Exception as e:
+            QMessageBox.warning(self, "Structural integrity", str(e))
+
+    def start_structural_integrity_n(self):
+        try:
+            # Gather geometry
+            center = None
+            circ = {}
+            for p in self.points:
+                idx = p.get('idx')
+                if idx == 0:
+                    center = (float(p['x']), float(p['y']))
+                elif isinstance(idx, str) and idx.startswith('C') and idx[1:].isdigit():
+                    circ[int(idx[1:])] = (float(p['x']), float(p['y']))
+            if center is None:
+                QMessageBox.warning(self, "Structural integrity", "No point with index 0 (center).")
+                return
+            missing = [k for k in range(10) if k not in circ]
+            if missing:
+                QMessageBox.warning(self, "Structural integrity", f"Missing C points: {missing}.")
+                return
+
+            servoP = self.prefs.get("servo.channel", 0)
+            S_collect = self.prefs.get("servo_positions.collect", self.prefs.get("servo.s_low", 0))
+            per_point = int(self.prefs.get("test.struct_per_point", 10))
+
+            cmds = []
+            # Safe startup
+            cmds += [
+                f"M280 P{servoP} S{S_collect}",
+                "M42 P3 S0", "M42 P4 S0", "M42 P5 S0", "M42 P10 S0",
+                "G92 E0", "G90"
+            ]
+
+            cx, cy = center
+            for k in range(10):
+                xk, yk = circ[k]
+                # 1) 0 -> 2) Ck
+                cmds += ["G90", f"G1 X{cx:.3f} Y{cy:.3f} F3000", "M400",
+                         f"G1 X{xk:.3f} Y{yk:.3f} F3000", "M400"]
+                # 3) start recording, 4) wait 1s
+                cmds += ["::CAM_START", "::SLEEP 1"]
+                # 5–7) structural cycle until temp_count == per_point
+                cmds += ["::BTN_SHOW_NAILS", f"::STRUCT_CYCLE_N N={2}"]
                 # 8) temp resets internally; 9) stop recording
                 cmds += ["::CAM_STOP"]
 
@@ -2404,18 +2589,20 @@ class MainWindow(QMainWindow):
     def start_throwing_objects(self):
         try:
             center = None
-            pointA = None
+            point1 = None
             for p in self.points:
                 idx = p.get('idx')
                 if idx == 0:
                     center = (float(p['x']), float(p['y']))
-                elif isinstance(idx, str) and str(idx).upper() == 'A':
-                    pointA = (float(p['x']), float(p['y']))
+                    print(center)
+                elif idx == 1:
+                    point1 = (float(p['x']), float(p['y']))
+                    print(point1)
             if center is None:
                 QMessageBox.warning(self, "Throwing objects", "No point with index 0 (center).")
                 return
-            if pointA is None:
-                QMessageBox.warning(self, "Throwing objects", "No point A stated.")
+            if point1 is None:
+                QMessageBox.warning(self, "Throwing objects", "No point 1 stated.")
                 return
 
             servoP = self.prefs.get("servo.channel", 0)
@@ -2431,14 +2618,15 @@ class MainWindow(QMainWindow):
                 "G92 E0", "G90"
             ]
             cx, cy = center
-            ax, ay = pointA
+            ax, ay = point1
+            print(cx, cy, ax, ay)
 
             for b in range(big_iters):
-                # 1) Go to 0 -> 2) Go to A
+                # 1) Go to 0 -> 2) Go to point 1
                 cmds += [f"G1 X{cx:.3f} Y{cy:.3f} F3000", "M400",
                          f"G1 X{ax:.3f} Y{ay:.3f} F3000", "M400"]
                 # 3) do structural cycle but target 100
-                cmds += ["::CAM_START", "::SLEEP 1", "::STRUCT_CYCLE N=100"]
+                cmds += ["::CAM_START", "::SLEEP 1", "::STRUCT_CYCLE_B N=100"]
                 # 4) interim prompt
                 cmds += ["::INTERIM_PROMPT_SHOW", "::INTERIM_PROMPT_WAIT"]
                 # Stop recording after each big iteration
@@ -2507,9 +2695,10 @@ class MainWindow(QMainWindow):
             return
 
         mapping = {
-            "steel_balls": self.start_structural_integrity,
-            "nails": self.start_throwing_objects,
-            "steel_rod": self.start_impact_test,
+            "structural_integrity_b": self.start_structural_integrity_b,
+            "structural_integrity_n": self.start_structural_integrity_n,
+            "throwing_objects": self.start_throwing_objects,
+            "impact_test": self.start_impact_test,
         }
         fn = mapping.get(sel.choice)
         if not fn:
