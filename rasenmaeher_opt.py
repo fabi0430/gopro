@@ -1371,6 +1371,7 @@ class TestRunnerDialog(QDialog):
         next_group = QGroupBox("Next commands (look-ahead 10)")
         next_layout = QVBoxLayout()
         self.next_list = QListWidget()
+        self._last_next_slice = None
         next_layout.addWidget(self.next_list, 1)
         next_group.setLayout(next_layout)
         v.addWidget(next_group, 1)
@@ -1455,6 +1456,9 @@ class TestRunnerDialog(QDialog):
         self.state_label.setText(f"State: {st}")
 
     def set_next(self, commands_slice):
+        if commands_slice == self._last_next_slice:
+            return
+        self._last_next_slice = list(commands_slice)
         self.next_list.clear()
         for c in commands_slice:
             self.next_list.addItem(c)
@@ -1840,7 +1844,7 @@ class CommandRunner(QThread):
             if target:
                 self._wait_until_position(target)
 
-            self.sleep(int(self.wait_after_ok_sec))
+            self.msleep(int(max(0, self.wait_after_ok_sec) * 1000))
             self._index += 1
 
             start = self._index
@@ -1859,7 +1863,10 @@ class MainWindow(QMainWindow):
         print("[INIT] MainWindow starting...")
         self.duet_ip = "192.168.185.2"  # ajusta si tu IP es otra
         import requests as _rq
+        from requests.adapters import HTTPAdapter
         self.http = _rq.Session()
+        # small connection pool is enough and cheaper on Pi
+        self.http.mount('http://', HTTPAdapter(pool_connections=2, pool_maxsize=4))
         self.http.headers.update({'Connection': 'keep-alive'})
 
         # --- Setup GoPro (siempre habilitado) ---
@@ -1901,7 +1908,7 @@ class MainWindow(QMainWindow):
         self.duet_gpIn2_index = 2  # J2 -> sensors.gpIn[2] (io1.in)
         self.ball_timer = QTimer(self)
         self.ball_timer.timeout.connect(self.poll_duet_ballcount)
-        self.ball_timer.start(1500)
+        self.ball_timer.start(2000)
         print("[INIT] MainWindow ready.")
 
     def init_ui(self):
@@ -1996,6 +2003,7 @@ class MainWindow(QMainWindow):
         status_layout = QVBoxLayout()
 
         self.status_label = QLabel("GoPro: idle (not connected)")
+        self._last_status_text = None
         self.status_label.setStyleSheet("font-size: 14px;")
 
         self.ref_pos_label = QLabel("Reference position: Not set")
@@ -2131,6 +2139,10 @@ class MainWindow(QMainWindow):
             self.gopro_label.setPixmap(new_pm)
 
     def update_status(self, message):
+        # Coalesce identical updates to reduce UI work
+        if message == self._last_status_text:
+            return
+        self._last_status_text = message
         self.status_label.setText(message)
 
         if "Recording" in message:
@@ -2828,14 +2840,47 @@ class MainWindow(QMainWindow):
             return
         fn()
 
+    
+    def _poll_duet_sensors_combined(self):
+        """
+        Single HTTP call to rr_model to fetch sensors.gpIn and update presence labels.
+        This replaces two separate requests per tick.
+        """
+        try:
+            r = self.http.get(f"http://{self.duet_ip}/rr_model",
+                              params={"key": "sensors.gpIn", "flags": "v"},
+                              timeout=0.6)
+            if r.status_code != 200:
+                return
+            data = r.json()
+            arr = data.get("result")
+            # arr can be dict with "tools" etc; for gpIn we expect a list/dict of items with 'value'
+            def _val(idx, default=False):
+                try:
+                    v = arr[idx]
+                    if isinstance(v, dict):
+                        v = v.get("value", 0)
+                    return bool(int(v)) if isinstance(v, (int, float, str)) else bool(v)
+                except Exception:
+                    return default
+            idx1 = getattr(self, "duet_gpIn_index", 1)
+            idx2 = getattr(self, "duet_gpIn2_index", 2)
+            present1 = _val(idx1, False)
+            present2 = _val(idx2, False)
+            # Update UI (lightweight)
+            self.presence_value.setText("Metal" if present1 else "No metal")
+            self.presence_value.setStyleSheet("color: green;" if present1 else "color: gray;")
+            self.presence2_value.setText("Metal" if present2 else "No metal")
+            self.presence2_value.setStyleSheet("color: green;" if present2 else "color: gray;")
+        except Exception:
+            pass
     def poll_duet_ballcount(self):
-            """Update sensors from Duet; ball count is local and shown from self.local_ball_count."""
+            """Update sensors from Duet; ball count is local. Uses a single rr_model call."""
             try:
                 self.ballcount_edit.setText(str(self.local_ball_count))
             except Exception:
                 pass
-            self.update_presence_from_duet()
-            self.update_presence2_from_duet()
+            self._poll_duet_sensors_combined()
 
     def update_presence_from_duet(self):
         """
