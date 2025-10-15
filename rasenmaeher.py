@@ -661,6 +661,12 @@ class GoProManager(QThread):
     def __init__(self):
         super().__init__()
         self.constants = None
+        # Performance knobs (Raspberry Pi)
+        self.emit_fps = 12
+        self._last_emit_ts = 0.0
+        self.process_scale = 0.5
+        self.frame_skip = 1
+        self.cap_props_set = False
         self.gopro = None
         self.cap = None
         self.recording = False
@@ -671,6 +677,9 @@ class GoProManager(QThread):
         self.show_filters = False
         self.loop = None
         self.stream_url = None
+        self.retry_limit = 1
+        self.detect_enabled = True
+        self._frame_counter = 0
 
     async def initialize(self):
         try:
@@ -689,6 +698,11 @@ class GoProManager(QThread):
                 streaming.PreviewStreamOptions(port=STREAM_PORT))
             self.stream_url = self.gopro.streaming.url
             self.cap = cv2.VideoCapture(self.stream_url)
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.cap.set(cv2.CAP_PROP_FPS, self.emit_fps)
+            except Exception:
+                pass
             self.status_update.emit("📡 Stream started")
         except Exception as e:
             self.status_update.emit(f"⚠️ Stream error: {str(e)}")
@@ -771,52 +785,97 @@ class GoProManager(QThread):
     def run(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._run())
+        self.loop.run_until_complete(self._run_with_retries())
 
-    async def _run(self):
-        if not await self.initialize():
-            return
-        while self._run_flag:
+    async def _run_with_retries(self):
+        tries = int(getattr(self, 'retry_limit', 1) or 1)
+        attempt = 0
+        while self._run_flag and attempt < tries:
+            attempt += 1
             try:
+                ok = await self.initialize()
+                if not ok:
+                    self.status_update.emit(f"⚠️ Connection attempt {attempt}/{tries} failed")
+                    if attempt < tries:
+                        await asyncio.sleep(2)
+                    continue
                 await self.start_stream()
+                # Process frames until stream ends or stop requested
                 while self._run_flag and self.cap and self.cap.isOpened():
                     ret, frame = self.cap.read()
-                    if ret:
-                        processed_frame, masks = self.process_frame(frame)
-                        rgb_image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                        h, w, ch = rgb_image.shape
-                        bytes_per_line = ch * w
-                        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-                        self.frame_ready.emit(qt_image)
-                        if self.show_filters:
-                            red_mask, cleaned_mask = masks
-                            cv2.imshow("Red Mask", red_mask)
-                            cv2.imshow("Cleaned Mask", cleaned_mask)
-                            cv2.waitKey(1)
-                    else:
+                    if not ret:
                         break
+                    self._frame_counter = (self._frame_counter + 1) % max(1, int(getattr(self, 'frame_skip', 1)))
+                    if self._frame_counter != 0:
+                        continue
+                    # Throttle UI FPS
+                    import time as _time
+                    now = _time.time()
+                    if (now - self._last_emit_ts) < (1.0 / max(1, self.emit_fps)):
+                        continue
+                    self._last_emit_ts = now
+                    processed_frame, masks = self.process_frame(frame)
+                    rgb_image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                    h, w, ch = rgb_image.shape
+                    bytes_per_line = ch * w
+                    qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+                    self.frame_ready.emit(qt_image)
+                    if self.show_filters:
+                        red_mask, cleaned_mask = masks
+                        cv2.imshow("Red Mask", red_mask)
+                        cv2.imshow("Cleaned Mask", cleaned_mask)
+                        cv2.waitKey(1)
+                # Clean up after stream ends
                 if self.show_filters:
                     cv2.destroyWindow("Red Mask")
                     cv2.destroyWindow("Cleaned Mask")
                 if self.cap:
                     self.cap.release()
                 if self.gopro:
-                    await self.gopro.streaming.stop_active_stream()
+                    try:
+                        await self.gopro.streaming.stop_active_stream()
+                    except Exception:
+                        pass
+                # If we reach here without stop flag, consider it a failed attempt and let loop retry
                 if not self._run_flag:
                     break
-                self.status_update.emit(f"🔄 Reconnecting in {RECONNECT_DELAY} seconds...")
-                await asyncio.sleep(RECONNECT_DELAY)
+                self.status_update.emit(f"⚠️ Stream ended (attempt {attempt}/{tries})")
             except Exception as e:
-                self.status_update.emit(f"⚠️ Stream error: {str(e)}")
-                await asyncio.sleep(RECONNECT_DELAY)
+                self.status_update.emit(f"⚠️ GoPro run error (attempt {attempt}/{tries}): {e}")
+            if attempt < tries and self._run_flag:
+                self.status_update.emit("🔄 Retrying in 2s...")
+                await asyncio.sleep(2)
+        # Out of tries
+        if attempt >= tries:
+            self.status_update.emit("⛔ Could not connect to GoPro after retries.")
         if self.gopro:
-            await self.gopro.close()
+            try:
+                await self.gopro.close()
+            except Exception:
+                pass
 
     def process_frame(self, frame):
+        # Fast path: if detection disabled, just resize for display and return empty masks
+        if not getattr(self, 'detect_enabled', True):
+            view = frame
+            try:
+                # cheap resize to half height for UI
+                h, w = frame.shape[:2]
+                view = cv2.resize(frame, (w//2*2, h//2*2), interpolation=cv2.INTER_AREA)
+            except Exception:
+                view = frame
+            dummy = (np.zeros((1,1), dtype=np.uint8), np.zeros((1,1), dtype=np.uint8))
+            return view, dummy
         x_start, x_end = 480, 1440
         y_start, y_end = 270, 810
         roi = frame[y_start:y_end, x_start:x_end]
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        scale = float(getattr(self, 'process_scale', 1.0))
+        if 0.2 <= scale < 1.0:
+            roi_small = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        else:
+            roi_small = roi
+            scale = 1.0
+        hsv = cv2.cvtColor(roi_small, cv2.COLOR_BGR2HSV)
         lower_red1 = np.array([self.hsv_values[0], self.hsv_values[4], self.hsv_values[6]])
         upper_red1 = np.array([self.hsv_values[1], self.hsv_values[5], self.hsv_values[7]])
         lower_red2 = np.array([self.hsv_values[2], self.hsv_values[4], self.hsv_values[6]])
@@ -828,14 +887,14 @@ class GoProManager(QThread):
         cleaned_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
         cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        processed_frame = frame.copy()
+        processed_frame = frame
         current_pos = None
         if len(contours) > 0:
             largest_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(largest_contour) > 500:
+            if cv2.contourArea(largest_contour) > (500 * (scale*scale)):
                 x, y, w, h = cv2.boundingRect(largest_contour)
-                x += x_start;
-                y += y_start
+                x = int(x / scale); y = int(y / scale); w = int(w / scale); h = int(h / scale)
+                x += x_start; y += y_start
                 current_pos = (x + w // 2, y + h // 2)
                 cv2.rectangle(processed_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 cv2.circle(processed_frame, current_pos, 5, (0, 255, 0), -1)
@@ -900,6 +959,12 @@ class Preferences:
             },
             "nails": {
                 "spindle_velocity": 1200
+            },
+            "video": {
+                "emit_fps": 10,
+                "process_scale": 0.5,
+                "frame_skip": 1,
+                "detect_enabled": True
             },
             "calibration_dir": {
                 "dir_x": 1,
@@ -974,6 +1039,10 @@ class EditPreferencesDialog(QDialog):
             ("Deposit position (S)", "servo_positions.deposit"),
             ("Calibration dir X (+1/-1)", "calibration_dir.dir_x"),
             ("Calibration dir Y (+1/-1)", "calibration_dir.dir_y"),
+            ("Video emit FPS", "video.emit_fps"),
+            ("Video process scale (0.2–1.0)", "video.process_scale"),
+            ("Video frame skip (int)", "video.frame_skip"),
+            ("Detection enabled (True/False)", "video.detect_enabled"),
         ]
 
         self.inputs = []
@@ -1008,10 +1077,17 @@ class EditPreferencesDialog(QDialog):
                 self.prefs.set(key, lst)
             elif key.endswith(("_step", "_F")):
                 self.prefs.set(key, float(raw))
-            elif key.endswith(("pixel_tolerance", "max_iters", "output_pin", "toggle_on_S", "toggle_off_S", "channel", "s_low", "s_high", "dwell_seconds", "struct_per_point", "throw_per_point", "throw_big_iters", "collect", "deposit", "dir_x", "dir_y")):
+            elif key.endswith(("pixel_tolerance", "max_iters", "output_pin", "toggle_on_S", "toggle_off_S", "channel", "s_low", "s_high", "dwell_seconds", "struct_per_point", "throw_per_point", "throw_big_iters", "collect", "deposit", "dir_x", "dir_y", "emit_fps", "frame_skip")):
                 self.prefs.set(key, int(float(raw)))
             else:
-                self.prefs.set(key, raw)
+                # Added bool/float handling for video keys
+                if key.endswith(("process_scale",)):
+                    self.prefs.set(key, float(raw))
+                elif key.endswith(("detect_enabled",)):
+                    val = raw.strip().lower()
+                    self.prefs.set(key, val in ("1","true","yes","y","on"))
+                else:
+                    self.prefs.set(key, raw)
             QMessageBox.information(self, "Saved", f"{key} updated.")
         except Exception as e:
             QMessageBox.warning(self, "Invalid value", f"Could not parse value for {key}:\n{e}")
@@ -1078,7 +1154,7 @@ class CalibrationWorker(QThread):
 
             # 1) Home using requested command
             self.progress.emit('Homing...')
-            ok, reply, _ = self.main._duet_send('M559 P"homeall.g"', read_reply=True)
+            ok, reply, _ = self.main._duet_send('M98 P"homeall.g"', read_reply=True)
             if not ok:
                 self.finished.emit(False, f"Homing failed (M559): {reply}", {})
                 return
@@ -1295,6 +1371,7 @@ class TestRunnerDialog(QDialog):
         next_group = QGroupBox("Next commands (look-ahead 10)")
         next_layout = QVBoxLayout()
         self.next_list = QListWidget()
+        self._last_next_slice = None
         next_layout.addWidget(self.next_list, 1)
         next_group.setLayout(next_layout)
         v.addWidget(next_group, 1)
@@ -1379,6 +1456,9 @@ class TestRunnerDialog(QDialog):
         self.state_label.setText(f"State: {st}")
 
     def set_next(self, commands_slice):
+        if commands_slice == self._last_next_slice:
+            return
+        self._last_next_slice = list(commands_slice)
         self.next_list.clear()
         for c in commands_slice:
             self.next_list.addItem(c)
@@ -1764,7 +1844,7 @@ class CommandRunner(QThread):
             if target:
                 self._wait_until_position(target)
 
-            self.sleep(int(self.wait_after_ok_sec))
+            self.msleep(int(max(0, self.wait_after_ok_sec) * 1000))
             self._index += 1
 
             start = self._index
@@ -1782,6 +1862,16 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1400, 800)
         print("[INIT] MainWindow starting...")
         self.duet_ip = "192.168.185.2"  # ajusta si tu IP es otra
+        import requests as _rq
+        from requests.adapters import HTTPAdapter
+        self.http = _rq.Session()
+        # small connection pool is enough and cheaper on Pi
+        self.http.mount('http://', HTTPAdapter(pool_connections=2, pool_maxsize=4))
+        self.http.headers.update({'Connection': 'keep-alive'})
+
+        # Calibration gate
+        self._calibrated = False
+        self._gated_controls = []
 
         # --- Setup GoPro (siempre habilitado) ---
         self.enable_gopro = True
@@ -1792,8 +1882,7 @@ class MainWindow(QMainWindow):
         self.gopro_manager.position_update.connect(self.handle_position_update)
         self.gopro_manager.recording_changed.connect(self.update_recording_label)
 
-        self.gopro_manager.start()  # 3) arrancar hilo (crea su propio event loop)
-
+        
         # Current position tracking
         self.local_ball_count = 0  # local counter increments on each completed shot
         self.current_position = None
@@ -1817,13 +1906,13 @@ class MainWindow(QMainWindow):
 
         self._pos_timer = QTimer(self)
         self._pos_timer.timeout.connect(self._drain_pos_queue)
-        self._pos_timer.start(100)
+        self._pos_timer.start(300)
 
         self.duet_gpIn_index = 1  # J1 -> sensors.gpIn[1]
         self.duet_gpIn2_index = 2  # J2 -> sensors.gpIn[2] (io1.in)
         self.ball_timer = QTimer(self)
         self.ball_timer.timeout.connect(self.poll_duet_ballcount)
-        self.ball_timer.start(1000)
+        self.ball_timer.start(2000)
         print("[INIT] MainWindow ready.")
 
     def init_ui(self):
@@ -1917,7 +2006,8 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("System Status")
         status_layout = QVBoxLayout()
 
-        self.status_label = QLabel("Connecting to GoPro...")
+        self.status_label = QLabel("GoPro: idle (not connected)")
+        self._last_status_text = None
         self.status_label.setStyleSheet("font-size: 14px;")
 
         self.ref_pos_label = QLabel("Reference position: Not set")
@@ -1932,6 +2022,10 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.ref_pos_label)
         status_layout.addWidget(self.recording_label)
+        
+        self.connect_gopro_btn = QPushButton("Connect GoPro")
+        self.connect_gopro_btn.clicked.connect(self.connect_gopro)
+        status_layout.addWidget(self.connect_gopro_btn)
         status_layout.addWidget(self.server_status_label)
         status_group.setLayout(status_layout)
         right_panel.addWidget(status_group)
@@ -1997,6 +2091,58 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(main_widget)
 
+        # Disable gated controls until calibrated
+        self._set_controls_enabled(False)
+
+
+    
+    def _set_controls_enabled(self, enabled: bool):
+        for w in getattr(self, "_gated_controls", []):
+            try:
+                w.setEnabled(bool(enabled))
+            except Exception:
+                pass
+
+    def _mark_calibrated(self, reason: str = ""):
+        self._calibrated = True
+        self._set_controls_enabled(True)
+        if reason:
+            self.update_status(f"✅ Calibrated ({reason})")
+        else:
+            self.update_status("✅ Calibrated")
+
+    def connect_gopro(self):
+        """Start GoPro connection routine with up to 3 attempts. Creates a fresh manager if needed."""
+        try:
+            # If a previous thread exists and is running, do nothing
+            if hasattr(self, "gopro_manager") and self.gopro_manager is not None and self.gopro_manager.isRunning():
+                QMessageBox.information(self, "GoPro", "GoPro connection is already running.")
+                return
+        except Exception:
+            pass
+        # (Re)create manager instance and wire signals
+        try:
+            self.gopro_manager = GoProManager()
+            self.gopro_manager.frame_ready.connect(self.update_gopro_image)
+            self.gopro_manager.status_update.connect(self.update_status)
+            self.gopro_manager.position_update.connect(self.handle_position_update)
+            self.gopro_manager.recording_changed.connect(self.update_recording_label)
+            self.gopro_manager.retry_limit = 3
+            self.update_status("🔌 Starting GoPro connection (up to 3 tries)...")
+            self._apply_video_prefs_to_gopro()
+            self.gopro_manager.start()
+        except Exception as e:
+            QMessageBox.critical(self, "GoPro", f"Failed to start GoPro thread:\n{e}")
+    def _apply_video_prefs_to_gopro(self):
+        try:
+            vm = self.gopro_manager
+            vm.emit_fps = int(self.prefs.get("video.emit_fps", vm.emit_fps))
+            vm.process_scale = float(self.prefs.get("video.process_scale", vm.process_scale))
+            vm.frame_skip = int(self.prefs.get("video.frame_skip", vm.frame_skip))
+            vm.detect_enabled = bool(self.prefs.get("video.detect_enabled", True))
+        except Exception:
+            pass
+    
     def update_recording_label(self, is_recording):
         if is_recording:
             self.recording_label.setText("Recording: 🔴 Recording")
@@ -2006,9 +2152,20 @@ class MainWindow(QMainWindow):
             self.recording_label.setStyleSheet("font-size: 14px; color: green;")
 
     def update_gopro_image(self, qt_image):
-        self.gopro_label.setPixmap(QPixmap.fromImage(qt_image))
+        # avoid redundant repaints
+        pm = self.gopro_label.pixmap()
+        new_pm = QPixmap.fromImage(qt_image)
+        if pm is None or pm.size() != new_pm.size():
+            self.gopro_label.setPixmap(new_pm)
+        else:
+            # paint in place to avoid realloc; still set to ensure refresh
+            self.gopro_label.setPixmap(new_pm)
 
     def update_status(self, message):
+        # Coalesce identical updates to reduce UI work
+        if message == self._last_status_text:
+            return
+        self._last_status_text = message
         self.status_label.setText(message)
 
         if "Recording" in message:
@@ -2110,7 +2267,7 @@ class MainWindow(QMainWindow):
     def read_gpin(self, idx: int) -> bool:
         """Return True if sensors.gpIn[idx].value is truthy."""
         try:
-            r = requests.get(
+            r = self.http.get(
                 f"http://{self.duet_ip}/rr_model",
                 params={"key": f"sensors.gpIn[{idx}].value", "flags": "v"},
                 timeout=0.6
@@ -2136,7 +2293,7 @@ class MainWindow(QMainWindow):
         Devuelve (ok, reply_text, data_json)
         """
         try:
-            r = requests.get(
+            r = self.http.get(
                 f"http://{self.duet_ip}/rr_gcode",
                 params={"gcode": gcode},
                 timeout=timeout
@@ -2153,7 +2310,7 @@ class MainWindow(QMainWindow):
             reply_text = ""
             if read_reply:
                 try:
-                    rr = requests.get(f"http://{self.duet_ip}/rr_reply", timeout=timeout)
+                    rr = self.http.get(f"http://{self.duet_ip}/rr_reply", timeout=timeout)
                     if rr.status_code == 200:
                         reply_text = rr.text
                 except Exception as e:
@@ -2223,7 +2380,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Duet", f"Error sending G-code:\n{e}")
 
     def show_gcode_console(self):
-        """Abre una ventanita para escribir y enviar G-codes a la Duet."""
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+        return
+#"""Abre una ventanita para escribir y enviar G-codes a la Duet."""
         dlg = QDialog(self)
         dlg.setWindowTitle("G-code Console")
         dlg.setMinimumSize(500, 400)
@@ -2265,7 +2425,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "G-code", f"Duet devolvió error para:\n{cmd}\nReply: {reply_text}\nData: {data}")
 
     def show_draw_circle_dialog(self):
-        """Ventana para pedir el radio y crear 10 puntos de círculo: C0..C9 a 36°."""
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
+#"""Ventana para pedir el radio y crear 10 puntos de círculo: C0..C9 a 36°."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Draw circle")
         dlg.setFixedSize(320, 120)
@@ -2290,12 +2453,12 @@ class MainWindow(QMainWindow):
         """Genera C0..C9 alrededor del punto con idx==0 y escribe al CSV."""
         txt = self.circle_radius_input.text().strip()
         if not txt:
-            QMessageBox.information(self, "Draw circle", "Ingresa un radio en mm.")
+            QMessageBox.information(self, "Draw circle", "Enter a radius in mm.")
             return
         try:
             R = float(txt)
         except ValueError:
-            QMessageBox.warning(self, "Draw circle", "Radio inválido.")
+            QMessageBox.warning(self, "Draw circle", "Invalid radius.")
             return
 
         # Buscar centro: punto con idx==0 (entero 0)
@@ -2336,11 +2499,14 @@ class MainWindow(QMainWindow):
             self._circle_dlg.close()
 
     def handle_record_click(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         if not self.enable_gopro:
-            QMessageBox.information(self, "GoPro", "GoPro está deshabilitado en esta plataforma.")
+            QMessageBox.information(self, "GoPro", "GoPro is disabled in this platform.")
             return
         if not self.gopro_manager.loop:
-            QMessageBox.information(self, "GoPro", "GoPro aún iniciando, intenta de nuevo en unos segundos.")
+            QMessageBox.information(self, "GoPro", "GoPro still initialising, wait some time befor retrying.")
             return
         future = asyncio.run_coroutine_threadsafe(
             self.gopro_manager.toggle_recording(),
@@ -2371,8 +2537,8 @@ class MainWindow(QMainWindow):
 
     def get_current_position_from_duet(self):
             try:
-                requests.get(f"http://{self.duet_ip}/rr_gcode", params={"gcode": "M114"}, timeout=2)
-                r = requests.get(f"http://{self.duet_ip}/rr_reply", timeout=2)
+                self.http.get(f"http://{self.duet_ip}/rr_gcode", params={"gcode": "M114"}, timeout=2)
+                r = self.http.get(f"http://{self.duet_ip}/rr_reply", timeout=2)
                 raw = r.text
                 import re
                 m = re.search(r"X:([\d\.-]+)\s+Y:([\d\.-]+)", raw)
@@ -2400,48 +2566,67 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Draw circle", f"Circle creation failed: {e}")
 
     def show_calibrate_dialog(self):
+            # Ask: Home-only or Run calibration routine
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Calibration")
+            msg.setText("Do you want to Home the machine or Run the calibration routine?")
+            home_btn = msg.addButton("Home only", QMessageBox.AcceptRole)
+            run_btn = msg.addButton("Run calibration", QMessageBox.ActionRole)
+            cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
+            msg.exec_()
+            clicked = msg.clickedButton()
+            if clicked is home_btn:
+                ok, rep, data = self._duet_send('M98 P"homeall.g"', read_reply=True)
+                if ok:
+                    self._mark_calibrated('home only')
+                else:
+                    QMessageBox.warning(self, 'Calibration', f'Homing failed: {rep}')
+                return
+            elif clicked is run_btn:
+                pass
+            else:
+                return
+
             dlg = CalibrateDialog(self)
+
             def start_clicked():
                 xraw, yraw, rraw = dlg.values()
                 def parse_float(s):
-                    s = s.replace(",", ".")
-                    return float(s)
+                    s = s.replace(",", "."); return float(s)
                 def valid_number(s):
-                    try:
-                        parse_float(s)
-                        return True
-                    except:
-                        return False
+                    try: parse_float(s); return True
+                    except: return False
                 if not xraw or not valid_number(xraw) or abs(parse_float(xraw)) > 500:
-                    dlg.msg.setText("Enter a valid X offset (|value| ≤ 500). Decimals allowed.")
-                    return
+                    dlg.msg.setText("Enter a valid X offset (|value| ≤ 500). Decimals allowed."); return
                 if not yraw or not valid_number(yraw) or abs(parse_float(yraw)) > 500:
-                    dlg.msg.setText("Enter a valid Y offset (|value| ≤ 500). Decimals allowed.")
-                    return
+                    dlg.msg.setText("Enter a valid Y offset (|value| ≤ 500). Decimals allowed."); return
                 if not rraw or not valid_number(rraw) or abs(parse_float(rraw)) > 5000:
-                    dlg.msg.setText("Enter a valid Radius (|value| ≤ 5000).")
-                    return
+                    dlg.msg.setText("Enter a valid Radius (|value| ≤ 5000). "); return
                 dlg.accept()
                 x_off = float(xraw.replace(",", "."))
                 y_off = float(yraw.replace(",", "."))
                 radius = float(rraw.replace(",", "."))
                 self._run_calibration(x_off, y_off, radius)
             dlg.start_btn.clicked.connect(start_clicked)
-            def cancel_and_home():
-                dlg.reject()
-                self._duet_send('M559 P"homeall.g"', read_reply=True)
-            dlg.cancel_btn.clicked.connect(cancel_and_home)
+            dlg.cancel_btn.clicked.connect(dlg.reject)
             dlg.exec_()
 
     def _run_calibration(self, x_off, y_off, radius):
             self.calib_worker = CalibrationWorker(self, x_off, y_off, radius)
             self.calib_worker.progress.connect(self.update_status)
-            self.calib_worker.finished.connect(lambda ok, m, res: self.update_status(m))
+            def _on_calib_finished(ok, m, res):
+                self.update_status(m)
+                if ok:
+                    self._mark_calibrated('calibration routine')
+            self.calib_worker.finished.connect(_on_calib_finished)
             self.calib_worker.start()
 
     def show_cnc_panel(self):
-            self.cnc_panel = CNCPanel(duet_ip=self.duet_ip, parent=self, jog_steps=self.jog_steps_for_panel)
-            self.cnc_panel.show()
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
+        self.cnc_panel = CNCPanel(duet_ip=self.duet_ip, parent=self, jog_steps=self.jog_steps_for_panel)
+        self.cnc_panel.show()
 
     def _drain_pos_queue(self):
         # Vacía la cola y aplica la última actualización disponible
@@ -2487,6 +2672,9 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def start_structural_integrity_b(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             # Gather geometry
             center = None
@@ -2537,6 +2725,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Structural integrity", str(e))
 
     def start_structural_integrity_n(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             # Gather geometry
             center = None
@@ -2587,6 +2778,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Structural integrity", str(e))
 
     def start_throwing_objects(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             center = None
             point1 = None
@@ -2637,6 +2831,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Throwing objects", str(e))
 
     def start_impact_test(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             center = None
             for p in self.points:
@@ -2680,7 +2877,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Impact test", str(e))
 
     def start_test(self):
-        # Always resolve dynamically and guard exceptions
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
+# Always resolve dynamically and guard exceptions
         cls = globals().get("TestTypeDialog")
         if cls is None:
             QMessageBox.critical(self, "Start test", "Internal error: TestTypeDialog class not found.")
@@ -2706,14 +2906,47 @@ class MainWindow(QMainWindow):
             return
         fn()
 
+    
+    def _poll_duet_sensors_combined(self):
+        """
+        Single HTTP call to rr_model to fetch sensors.gpIn and update presence labels.
+        This replaces two separate requests per tick.
+        """
+        try:
+            r = self.http.get(f"http://{self.duet_ip}/rr_model",
+                              params={"key": "sensors.gpIn", "flags": "v"},
+                              timeout=0.6)
+            if r.status_code != 200:
+                return
+            data = r.json()
+            arr = data.get("result")
+            # arr can be dict with "tools" etc; for gpIn we expect a list/dict of items with 'value'
+            def _val(idx, default=False):
+                try:
+                    v = arr[idx]
+                    if isinstance(v, dict):
+                        v = v.get("value", 0)
+                    return bool(int(v)) if isinstance(v, (int, float, str)) else bool(v)
+                except Exception:
+                    return default
+            idx1 = getattr(self, "duet_gpIn_index", 1)
+            idx2 = getattr(self, "duet_gpIn2_index", 2)
+            present1 = _val(idx1, False)
+            present2 = _val(idx2, False)
+            # Update UI (lightweight)
+            self.presence_value.setText("Metal" if present1 else "No metal")
+            self.presence_value.setStyleSheet("color: green;" if present1 else "color: gray;")
+            self.presence2_value.setText("Metal" if present2 else "No metal")
+            self.presence2_value.setStyleSheet("color: green;" if present2 else "color: gray;")
+        except Exception:
+            pass
     def poll_duet_ballcount(self):
-            """Update sensors from Duet; ball count is local and shown from self.local_ball_count."""
+            """Update sensors from Duet; ball count is local. Uses a single rr_model call."""
             try:
                 self.ballcount_edit.setText(str(self.local_ball_count))
             except Exception:
                 pass
-            self.update_presence_from_duet()
-            self.update_presence2_from_duet()
+            self._poll_duet_sensors_combined()
 
     def update_presence_from_duet(self):
         """
@@ -2721,7 +2954,7 @@ class MainWindow(QMainWindow):
         """
         try:
             idx = getattr(self, "duet_gpIn_index", 1)
-            r = requests.get(f"http://{self.duet_ip}/rr_model",
+            r = self.http.get(f"http://{self.duet_ip}/rr_model",
                              params={"key": f"sensors.gpIn[{idx}].value", "flags": "v"},
                              timeout=0.6)
             if r.status_code == 200:
@@ -2745,7 +2978,7 @@ class MainWindow(QMainWindow):
         """
         try:
             idx = getattr(self, "duet_gpIn2_index", 2)
-            r = requests.get(f"http://{self.duet_ip}/rr_model",
+            r = self.http.get(f"http://{self.duet_ip}/rr_model",
                              params={"key": f"sensors.gpIn[{idx}].value", "flags": "v"},
                              timeout=0.6)
             if r.status_code == 200:
