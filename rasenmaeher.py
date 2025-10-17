@@ -731,7 +731,6 @@ class GoProManager(QThread):
             confirm_resp = await self.gopro.http_command.get_camera_state()
             confirmed_encoding = confirm_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_confirmed = bool(confirmed_encoding)
-            self.recording_changed.emit(recording_confirmed)
             print("Confirmed state (ENCODING):", confirmed_encoding)
             if recording_confirmed:
                 self.status_update.emit("🔴 Recording started")
@@ -767,6 +766,21 @@ class GoProManager(QThread):
             error_msg = f"⚠️ Download error: {e}"
             print("❌", error_msg)
             self.status_update.emit(error_msg)
+
+def submit(self, coro):
+    """Thread-safe: schedule a coroutine on the GoPro asyncio loop."""
+    if self.loop is None:
+        raise RuntimeError("GoPro loop not initialized")
+    try:
+        # Schedule in the GoPro thread's loop safely
+        self.loop.call_soon_threadsafe(asyncio.create_task, coro)
+    except Exception as e:
+        try:
+            self.status_update.emit(f"⚠️ submit error: {e}")
+        except Exception:
+            pass
+        raise
+
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
@@ -1561,26 +1575,30 @@ class CommandRunner(QThread):
             # Camera control
             if token == 'CAM_START':
                 try:
-                    if main.gopro_manager and main.gopro_manager.loop:
-                        import asyncio
-                        fut = asyncio.run_coroutine_threadsafe(
-                            main.gopro_manager.gopro.http_command.set_shutter(shutter=constants.Toggle.ENABLE), main.gopro_manager.loop
+                    print("[TOK] CAM_START → scheduling on GoPro loop")
+                    if main.gopro_manager and main.gopro_manager.loop and main.gopro_manager.gopro:
+                        main.gopro_manager.loop.call_soon_threadsafe(
+                            asyncio.create_task,
+                            main.gopro_manager.gopro.http_command.set_shutter(shutter=constants.Toggle.ENABLE)
                         )
-                        fut.result(timeout=4)
-                except Exception:
-                    pass
+                    else:
+                        print("[TOK] CAM_START → GoPro loop not ready")
+                except Exception as _e:
+                    print("[TOK] CAM_START error:", _e)
                 return True
 
             if token == 'CAM_STOP':
                 try:
-                    if main.gopro_manager and main.gopro_manager.loop:
-                        import asyncio
-                        fut = asyncio.run_coroutine_threadsafe(
-                            main.gopro_manager.gopro.http_command.set_shutter(shutter=constants.Toggle.DISABLE), main.gopro_manager.loop
+                    print("[TOK] CAM_STOP → scheduling on GoPro loop")
+                    if main.gopro_manager and main.gopro_manager.loop and main.gopro_manager.gopro:
+                        main.gopro_manager.loop.call_soon_threadsafe(
+                            asyncio.create_task,
+                            main.gopro_manager.gopro.http_command.set_shutter(shutter=constants.Toggle.DISABLE)
                         )
-                        fut.result(timeout=4)
-                except Exception:
-                    pass
+                    else:
+                        print("[TOK] CAM_STOP → GoPro loop not ready")
+                except Exception as _e:
+                    print("[TOK] CAM_STOP error:", _e)
                 return True
 
             # Structural cycle (sensor-driven). Format: ::STRUCT_CYCLE N=<int>
@@ -2439,6 +2457,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "G-code", f"Duet devolvió error para:\n{cmd}\nReply: {reply_text}\nData: {data}")
 
     def show_draw_circle_dialog(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
 #"""Ventana para pedir el radio y crear 10 puntos de círculo: C0..C9 a 36°."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Draw circle")
@@ -2510,33 +2531,17 @@ class MainWindow(QMainWindow):
             self._circle_dlg.close()
 
     def handle_record_click(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         if not self.enable_gopro:
             QMessageBox.information(self, "GoPro", "GoPro is disabled in this platform.")
             return
         if not self.gopro_manager.loop:
             QMessageBox.information(self, "GoPro", "GoPro still initialising, wait some time befor retrying.")
             return
-        future = asyncio.run_coroutine_threadsafe(
-            self.gopro_manager.toggle_recording(),
-            self.gopro_manager.loop
-        )
+        self.gopro_manager.submit(self.gopro_manager.toggle_recording())
 
-        def callback(fut):
-            try:
-                fut.result()
-            except Exception as e:
-                print("Recording error:", e)
-
-        future.add_done_callback(callback)
-
-        def callback(fut):
-            try:
-                result = fut.result()
-                print("Recording ended:", result)
-            except Exception as e:
-                print("Recording error:", e)
-
-        future.add_done_callback(callback)
 
     def show_edit_preferences(self):
             dlg = EditPreferencesDialog(self.prefs, self)
@@ -2630,6 +2635,9 @@ class MainWindow(QMainWindow):
             self.calib_worker.start()
 
     def show_cnc_panel(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         self.cnc_panel = CNCPanel(duet_ip=self.duet_ip, parent=self, jog_steps=self.jog_steps_for_panel)
         self.cnc_panel.show()
 
@@ -2677,6 +2685,9 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def start_structural_integrity_b(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             # Gather geometry
             center = None
@@ -2727,6 +2738,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Structural integrity", str(e))
 
     def start_structural_integrity_n(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             # Gather geometry
             center = None
@@ -2777,6 +2791,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Structural integrity", str(e))
 
     def start_throwing_objects(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             center = None
             point1 = None
@@ -2827,6 +2844,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Throwing objects", str(e))
 
     def start_impact_test(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
         try:
             center = None
             for p in self.points:
@@ -2870,6 +2890,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Impact test", str(e))
 
     def start_test(self):
+        if not self._calibrated:
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
+            return
 # Always resolve dynamically and guard exceptions
         cls = globals().get("TestTypeDialog")
         if cls is None:
