@@ -1608,7 +1608,7 @@ class CommandRunner(QThread):
                 except Exception:
                     pass
                 self._structural_cycle_n(target)
-                self._structural_cycle_n(target)
+                #self._structural_cycle_n(target)
                 try:
                     self.main._duet_send("G90", read_reply=True)
                     self.main._duet_send("M400", read_reply=True)
@@ -1701,9 +1701,15 @@ class CommandRunner(QThread):
 
         # 5) If ball already in chamber -> one shot
         if self._read_sensor_ball():
-            main._duet_send(f"M42 P{pin} S1", read_reply=True); self.msleep(500)
-            main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(500)
+            main._duet_send(f"M42 P{pin} S1", read_reply=True)
             temp += 1
+            try:
+                main._on_shot_completed()  # increment local counter and refresh UI
+            except Exception:
+                pass
+            self.msleep(500)
+            main._duet_send(f"M42 P{pin} S0", read_reply=True)
+            self.msleep(500)
 
         # 6) Wait
         self.msleep(500)
@@ -1723,8 +1729,15 @@ class CommandRunner(QThread):
             # 7.2) While ball present -> shoot and increment
             self.msleep(100)
             while self._read_sensor_ball() and temp < target and not self._cancel:
-                main._duet_send(f"M42 P{pin} S1", read_reply=True); temp += 1; self.msleep(500)
-                main._duet_send(f"M42 P{pin} S0", read_reply=True); self.msleep(500)
+                main._duet_send(f"M42 P{pin} S1", read_reply=True)
+                temp += 1
+                try:
+                    main._on_shot_completed()  # increment local counter and refresh UI
+                except Exception:
+                    pass
+                self.msleep(500)
+                main._duet_send(f"M42 P{pin} S0", read_reply=True)
+                self.msleep(500)
                 # Confirm chamber clear
                 waited = 0
                 while waited < 900 and not self._cancel:
@@ -2381,8 +2394,8 @@ class MainWindow(QMainWindow):
 
     def show_gcode_console(self):
         if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-        return
+            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.')
+            return
 #"""Abre una ventanita para escribir y enviar G-codes a la Duet."""
         dlg = QDialog(self)
         dlg.setWindowTitle("G-code Console")
