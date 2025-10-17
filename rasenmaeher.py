@@ -767,20 +767,19 @@ class GoProManager(QThread):
             print("❌", error_msg)
             self.status_update.emit(error_msg)
 
-def submit(self, coro):
-    """Thread-safe: schedule a coroutine on the GoPro asyncio loop."""
-    if self.loop is None:
-        raise RuntimeError("GoPro loop not initialized")
-    try:
-        # Schedule in the GoPro thread's loop safely
-        self.loop.call_soon_threadsafe(asyncio.create_task, coro)
-    except Exception as e:
+    def submit(self, coro):
+        """Thread-safe: schedule a coroutine on the GoPro asyncio loop."""
+        if self.loop is None:
+            raise RuntimeError("GoPro loop not initialized")
         try:
-            self.status_update.emit(f"⚠️ submit error: {e}")
-        except Exception:
-            pass
-        raise
-
+            # Schedule in the GoPro thread's loop safely
+            self.loop.call_soon_threadsafe(asyncio.create_task, coro)
+        except Exception as e:
+            try:
+                self.status_update.emit(f"⚠️ submit error: {e}")
+            except Exception:
+                pass
+            raise
 
     def set_reference_position(self, pos):
         self.reference_pos = pos
