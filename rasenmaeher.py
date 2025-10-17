@@ -731,6 +731,7 @@ class GoProManager(QThread):
             confirm_resp = await self.gopro.http_command.get_camera_state()
             confirmed_encoding = confirm_resp.data.get(constants.StatusId.ENCODING, 0)
             recording_confirmed = bool(confirmed_encoding)
+            self.recording_changed.emit(recording_confirmed)
             print("Confirmed state (ENCODING):", confirmed_encoding)
             if recording_confirmed:
                 self.status_update.emit("🔴 Recording started")
@@ -1563,7 +1564,7 @@ class CommandRunner(QThread):
                     if main.gopro_manager and main.gopro_manager.loop:
                         import asyncio
                         fut = asyncio.run_coroutine_threadsafe(
-                            main.gopro_manager.http_command.set_shutter(shutter=0), main.gopro_manager.loop
+                            main.gopro_manager.gopro.http_command.set_shutter(shutter=constants.Toggle.ENABLE), main.gopro_manager.loop
                         )
                         fut.result(timeout=4)
                 except Exception:
@@ -1575,7 +1576,7 @@ class CommandRunner(QThread):
                     if main.gopro_manager and main.gopro_manager.loop:
                         import asyncio
                         fut = asyncio.run_coroutine_threadsafe(
-                            main.gopro_manager.http_command.set_shutter(shutter=1), main.gopro_manager.loop
+                            main.gopro_manager.gopro.http_command.set_shutter(shutter=constants.Toggle.DISABLE), main.gopro_manager.loop
                         )
                         fut.result(timeout=4)
                 except Exception:
@@ -2438,9 +2439,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "G-code", f"Duet devolvió error para:\n{cmd}\nReply: {reply_text}\nData: {data}")
 
     def show_draw_circle_dialog(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
 #"""Ventana para pedir el radio y crear 10 puntos de círculo: C0..C9 a 36°."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Draw circle")
@@ -2512,9 +2510,6 @@ class MainWindow(QMainWindow):
             self._circle_dlg.close()
 
     def handle_record_click(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
         if not self.enable_gopro:
             QMessageBox.information(self, "GoPro", "GoPro is disabled in this platform.")
             return
@@ -2635,9 +2630,6 @@ class MainWindow(QMainWindow):
             self.calib_worker.start()
 
     def show_cnc_panel(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
         self.cnc_panel = CNCPanel(duet_ip=self.duet_ip, parent=self, jog_steps=self.jog_steps_for_panel)
         self.cnc_panel.show()
 
@@ -2685,9 +2677,6 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def start_structural_integrity_b(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
         try:
             # Gather geometry
             center = None
@@ -2738,9 +2727,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Structural integrity", str(e))
 
     def start_structural_integrity_n(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
         try:
             # Gather geometry
             center = None
@@ -2791,9 +2777,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Structural integrity", str(e))
 
     def start_throwing_objects(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
         try:
             center = None
             point1 = None
@@ -2844,9 +2827,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Throwing objects", str(e))
 
     def start_impact_test(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
         try:
             center = None
             for p in self.points:
@@ -2890,9 +2870,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Impact test", str(e))
 
     def start_test(self):
-        if not self._calibrated:
-            QMessageBox.information(self, 'Calibration required', 'Please home or run calibration first.');
-            return
 # Always resolve dynamically and guard exceptions
         cls = globals().get("TestTypeDialog")
         if cls is None:
