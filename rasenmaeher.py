@@ -31,6 +31,20 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QImage, QPixmap, QIntValidator, QPainter, QPen, QBrush
 
+# ---- Qt compatibility shims ----
+# Some environments expose only .exec() (PyQt6-style). Provide .exec_() aliases if missing.
+try:
+    from PyQt5.QtWidgets import QMenu, QDialog
+    if not hasattr(QMenu, "exec_") and hasattr(QMenu, "exec"):
+        QMenu.exec_ = QMenu.exec
+    if not hasattr(QDialog, "exec_") and hasattr(QDialog, "exec"):
+        QDialog.exec_ = QDialog.exec
+except Exception:
+    pass
+# --------------------------------
+
+
+
 class TestTypeDialog(QDialog):
     """Modal dialog to choose which test to run before showing the execution monitor."""
     def __init__(self, parent=None):
