@@ -696,11 +696,13 @@ class GoProManager(QThread):
         self._frame_counter = 0
     def submit(self, coro):
         if self.loop is None:
-            raise RuntimeError("GoPro loop not initialized")
-        # Thread-safe scheduling on the GoPro event loop
-        self.loop.call_soon_threadsafe(asyncio.create_task, coro)
-
-
+            raise RuntimeError('GoPro loop not initialized')
+        # Schedule coroutine safely from any thread
+        try:
+            fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+            return fut
+        except Exception as e:
+            raise
 
     async def initialize(self):
         try:
@@ -826,6 +828,8 @@ class GoProManager(QThread):
                     ret, frame = self.cap.read()
                     if not ret:
                         break
+                    # Yield to the event loop so submitted coroutines can run
+                    await asyncio.sleep(0)
                     self._frame_counter = (self._frame_counter + 1) % max(1, int(getattr(self, 'frame_skip', 1)))
                     if self._frame_counter != 0:
                         continue
@@ -841,6 +845,7 @@ class GoProManager(QThread):
                     bytes_per_line = ch * w
                     qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
                     self.frame_ready.emit(qt_image)
+                    await asyncio.sleep(0)
                     if self.show_filters:
                         red_mask, cleaned_mask = masks
                         cv2.imshow("Red Mask", red_mask)
