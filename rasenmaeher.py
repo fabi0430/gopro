@@ -1940,6 +1940,10 @@ class MainWindow(QMainWindow):
         self._calibrated = False
         self._gated_controls = []
 
+        # --- Setup GoPro ---
+        self.enable_gopro = True
+        self._conn_dialog = None  # <-- make sure the attribute always exists
+
         # --- Setup GoPro (siempre habilitado) ---
         self.enable_gopro = True
 
@@ -2159,7 +2163,7 @@ class MainWindow(QMainWindow):
 
         # Disable gated controls until calibrated
         self._set_controls_enabled(False)
-        
+
     def pause_background(self):
         """Pause background I/O (Duet/CNC polling etc.) while connecting."""
         try:
@@ -2201,11 +2205,15 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print("update_gopro_image error:", e)
 
-
     def connect_gopro(self):
-        """Modal, cancelable GoPro connection. Pauses background until connected or canceled."""
+        """Start a visible connection workflow with a modal status window.
+        - Shows a ConnectionDialog with BLE/Wi-Fi status.
+        - Temporarily pauses other timers (Duet polling, etc.).
+        - Starts the GoPro thread if it's not already running.
+        - Closes the dialog when stream is up or on error/cancel.
+        """
         # If a dialog is already visible, bring it to front
-        if hasattr(self, "_conn_dialog") and self._conn_dialog is not None and self._conn_dialog.isVisible():
+        if getattr(self, "_conn_dialog", None) is not None and self._conn_dialog.isVisible():
             try:
                 self._conn_dialog.raise_()
                 self._conn_dialog.activateWindow()
@@ -2216,7 +2224,9 @@ class MainWindow(QMainWindow):
         # Ensure manager exists; (re)create if not running
         needs_start = True
         try:
-            needs_start = not (hasattr(self, "gopro_manager") and self.gopro_manager is not None and self.gopro_manager.isRunning())
+            needs_start = not (hasattr(self, "gopro_manager")
+                               and self.gopro_manager is not None
+                               and self.gopro_manager.isRunning())
         except Exception:
             needs_start = True
 
@@ -2232,35 +2242,107 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "_apply_video_prefs_to_gopro"):
                     self._apply_video_prefs_to_gopro()
             except Exception as e:
-                QMessageBox.critical(self, "GoPro", f"Failed to create GoPro manager:{e}")
+                QMessageBox.critical(self, "GoPro", f"Failed to create GoPro manager:\n{e}")
                 return
 
-        self.pause_background()
-
-        # Build dialog and wire status mapping
-        self._conn_dialog = ConnectionDialog(self)
-        self._conn_dialog.set_waiting("Waiting for connection with GoPro…")
-
-        def _on_status(msg: str):
+        # Pause background I/O while connecting
+        self._paused_timers = []
+        for t in [getattr(self, "duet_poll_timer", None),
+                  getattr(self, "position_timer", None),
+                  getattr(self, "ball_timer", None)]:
             try:
-                low = msg.lower()
-                if "connected to gopro" in low or "ble connected" in low or "bluetooth" in low:
-                    self._conn_dialog.set_ble_connected()
-                if "stream started" in low or "http preview" in low or "preview ok" in low or "wi-fi" in low or "wifi" in low:
-                    self._conn_dialog.set_wifi_connected()
-                    from PyQt5.QtCore import QTimer
-                    QTimer.singleShot(350, self._conn_dialog.accept)
-                if "ble error" in low or "connection error" in low or "failed to connect" in low:
-                    self._conn_dialog.set_ble_error(f"Bluetooth: ⚠️ {msg}")
-                if "stream error" in low or "wifi error" in low or "failed to start stream" in low:
-                    self._conn_dialog.set_wifi_error(f"Wi‑Fi/Stream: ⚠️ {msg}")
+                if t is not None and hasattr(t, "isActive") and t.isActive():
+                    self._paused_timers.append((t, t.interval()))
+                    t.stop()
             except Exception:
                 pass
 
+        # Build dialog
+        self._conn_dialog = ConnectionDialog(self)
+        self._conn_dialog.set_waiting("Waiting for connection with GoPro…")
+
+        from PyQt5.QtCore import QTimer
+
+        # Temporary slot that ONLY touches the dialog if it still exists
+        def _on_status(msg: str):
+            dlg = getattr(self, "_conn_dialog", None)
+            if dlg is None or not isinstance(dlg, QDialog):
+                return
+            try:
+                low = (msg or "").lower()
+                if "connected to gopro" in low or "ble connected" in low or "bluetooth" in low:
+                    dlg.set_ble_connected()
+                if ("stream started" in low or "http preview" in low or "preview ok" in low
+                        or "wi-fi" in low or "wifi" in low or "wi-fi" in low):
+                    dlg.set_wifi_connected()
+                    QTimer.singleShot(350, dlg.accept)  # let the user see the green checks
+                if "ble error" in low or "connection error" in low or "failed to connect" in low:
+                    dlg.set_ble_error(f"Bluetooth: ⚠️ {msg}")
+                if "stream error" in low or "wifi error" in low or "failed to start stream" in low:
+                    dlg.set_wifi_error(f"Wi-Fi/Stream: ⚠️ {msg}")
+            except Exception:
+                pass
+
+        # Wire status watcher
         try:
             self.gopro_manager.status_update.connect(_on_status)
         except Exception:
             pass
+
+        # Cancel handler
+        def _on_cancel():
+            try:
+                if self.gopro_manager and self.gopro_manager.isRunning():
+                    self.gopro_manager._run_flag = False
+            except Exception:
+                pass
+
+        try:
+            self._conn_dialog.cancel_connect.connect(_on_cancel)
+        except Exception:
+            pass
+
+        # Start thread if needed
+        if needs_start:
+            try:
+                self.update_status("🔌 Starting GoPro connection (up to 3 tries).")
+                self.gopro_manager.start()
+            except Exception as e:
+                QMessageBox.critical(self, "GoPro", f"Failed to start GoPro thread:\n{e}")
+                try:
+                    self._conn_dialog.reject()
+                except Exception:
+                    pass
+                try:
+                    self.gopro_manager.status_update.disconnect(_on_status)
+                except Exception:
+                    pass
+                # Resume timers
+                for t, itv in getattr(self, "_paused_timers", []):
+                    try:
+                        t.start(itv)
+                    except Exception:
+                        pass
+                self._conn_dialog = None
+                return
+
+        # Run modal
+        self._conn_dialog.exec_()
+
+        # Disconnect temp slot and resume background
+        try:
+            self.gopro_manager.status_update.disconnect(_on_status)
+        except Exception:
+            pass
+        for t, itv in getattr(self, "_paused_timers", []):
+            try:
+                t.start(itv)
+            except Exception:
+                pass
+
+        # Clear the attribute so stray slots won't break later
+        self._conn_dialog = None
+
 
         def _on_cancel():
             try:
