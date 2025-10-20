@@ -2336,7 +2336,7 @@ class MainWindow(QMainWindow):
                 return
 
         # Run modal
-        self._conn_dialog.exec_()
+        getattr(self, '_conn_dialog', None) and self._conn_dialog.exec_()
 
         # Disconnect temp slot and resume background
         try:
@@ -2353,6 +2353,7 @@ class MainWindow(QMainWindow):
         self._conn_dialog = None
 
 
+        return
         def _on_cancel():
             try:
                 if self.gopro_manager and self.gopro_manager.isRunning():
@@ -2373,7 +2374,7 @@ class MainWindow(QMainWindow):
                 return
 
         # Run modal
-        self._conn_dialog.exec_()
+        getattr(self, '_conn_dialog', None) and self._conn_dialog.exec_()
 
         try: self.gopro_manager.status_update.disconnect(_on_status)
         except Exception: pass
@@ -2500,7 +2501,7 @@ class MainWindow(QMainWindow):
             pass
 
         # Run dialog (modal event loop)
-        self._conn_dialog.exec_()
+        getattr(self, '_conn_dialog', None) and self._conn_dialog.exec_()
 
         # After dialog closes, resume paused timers
         try:
