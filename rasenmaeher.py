@@ -2297,11 +2297,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        try:
-            self._conn_dialog.cancel_connect.connect(_on_cancel)
-        except Exception:
-            pass
-
         # Start thread if needed
         if needs_start:
             try:
@@ -2350,14 +2345,12 @@ class MainWindow(QMainWindow):
                     self.gopro_manager._run_flag = False
             except Exception:
                 pass
-        self._conn_dialog.cancel_connect.connect(_on_cancel)
-
-        if needs_start:
-            try:
-                self.update_status("🔌 Starting GoPro connection (up to 3 tries).")
-                self.gopro_manager.start()
-            except Exception as e:
-                QMessageBox.critical(self, "GoPro", f"Failed to start GoPro thread:{e}")
+            if needs_start:
+                try:
+                    self.update_status("🔌 Starting GoPro connection (up to 3 tries).")
+                    self.gopro_manager.start()
+                except Exception as e:
+                    QMessageBox.critical(self, "GoPro", f"Failed to start GoPro thread:{e}")
                 try: self._conn_dialog.reject()
                 except Exception: pass
                 try: self.gopro_manager.status_update.disconnect(_on_status)
@@ -2488,7 +2481,7 @@ class MainWindow(QMainWindow):
                 pass
 
         try:
-            self._conn_dialog.cancel_connect.connect(_on_cancel)
+            pass
         except Exception:
             pass
 
